@@ -22,6 +22,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from hohere.config.schema import HohereConfig, dump_config
+from hohere.publishing.card_assets import write_card_assets
 from hohere.storage.local import DatasetStore, read_json, write_json
 from hohere.storage.manifest import build_manifest, sha256_file
 
@@ -160,7 +161,10 @@ def export_dataset(
         (out_dir / "reports").mkdir(exist_ok=True)
         shutil.copy2(report, out_dir / "reports" / "validation.json")
     validation = read_json(report)["summary"] if report.exists() else None
-    (out_dir / "README.md").write_text(dataset_card(cfg, manifest, shard_files, validation))
+    ids = [c["id"] for c in manifest["conversations"]]
+    assets = write_card_assets(store, ids, out_dir)
+    card = dataset_card(cfg, manifest, shard_files, validation, assets)
+    (out_dir / "README.md").write_text(card)
     return manifest
 
 
@@ -171,39 +175,123 @@ def _size_category(n: int) -> str:
     return "100K<n<1M"
 
 
+def _human(n: float) -> str:
+    for div, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if n >= div:
+            return f"{n / div:.1f}".rstrip("0").rstrip(".") + suffix
+    return f"{n:.0f}"
+
+
+def _badge(label: str, value: str, color: str) -> str:
+    def enc(t: str) -> str:
+        return t.replace("-", "--").replace("_", "__").replace(" ", "%20")
+
+    return (
+        f'<img alt="{label}: {value}" src="https://img.shields.io/badge/'
+        f'{enc(label)}-{enc(value)}-{color}?style=for-the-badge">'
+    )
+
+
+def _bar(frac: float, width: int = 20) -> str:
+    n = max(0, min(width, round(frac * width)))
+    return "█" * n + "░" * (width - n)
+
+
+SKILL_LABELS = {
+    "simple_dialogue": "💬 Simple dialogue",
+    "context_memory": "🧠 Context & memory",
+    "turn_taking": "⏳ Turn-taking & silence",
+    "backchannel": "👂 Backchannels",
+    "interruption": "✋ Interruptions",
+    "incomplete_thoughts": "🔁 Incomplete thoughts",
+}
+EVENT_LABELS = {
+    "normal_turn": "🗣️ Turn",
+    "short_pause": "· Short pause",
+    "long_pause": "⏸️ Long pause",
+    "overlap": "🔀 Overlap",
+    "backchannel": "👂 Backchannel",
+    "interruption": "✋ Interruption",
+    "cutoff": "✂️ Cutoff",
+    "self_correction": "🔁 Self-correction",
+}
+
+
 def dataset_card(
     cfg: HohereConfig,
     manifest: dict,
     shard_files: dict[str, list[str]],
     validation: dict | None = None,
+    assets: dict | None = None,
 ) -> str:
     t = manifest["totals"]
     pub, sc = cfg.publishing, cfg.speech
-    name = (pub.repository_id or cfg.project.name).split("/")[-1]
-    words, hours = t["words"], t["hours"]
+    repo = pub.repository_id or cfg.project.name
+    name = repo.split("/")[-1]
+    words, hours, convs = t["words"], t["hours"], t["conversations"]
     configs = "\n".join(
         f"  - split: {split}\n    path: data/{split}-*.parquet" for split in shard_files
     )
-    split_rows = "\n".join(
-        f"| {k} | {t['words_by_split'].get(k, 0):,} | {v:.1f} |"
-        for k, v in t["hours_by_split"].items()
+    badges = " ".join(
+        [
+            _badge("words", _human(words), "4C78A8"),
+            _badge("audio", f"{hours:.0f} h", "F58518"),
+            _badge("conversations", f"{convs:,}", "54A24B"),
+            _badge("license", pub.license.upper(), "B279A2"),
+            _badge("language", cfg.dataset.language.upper(), "72B7B2"),
+            _badge("data", "100% synthetic", "E45756"),
+        ]
     )
+    listen = ""
+    if assets:
+        base = f"https://huggingface.co/datasets/{repo}/resolve/main"
+        listen = f"""
+## 🎧 Listen
+
+<p align="center">
+  <audio controls src="{base}/{assets["audio"]}"></audio><br>
+  <sub>First {assets["seconds"]:.0f} s of <code>{assets["conversation_id"]}</code> ·
+  🎧 headphones: <b>left = user</b>, <b>right = assistant</b></sub>
+</p>
+
+<p align="center"><img src="{assets["timeline"]}" alt="two-channel timeline" width="100%"></p>
+"""
     skill_rows = "\n".join(
-        f"| `{k}` | {t['words_by_skill'].get(k, 0):,} | {v:.1f} | "
-        f"{t['words_by_skill'].get(k, 0) / max(words, 1) * 100:.0f}% | "
-        f"{t['target_share_by_skill'].get(k, 0) * 100:.0f}% |"
-        for k, v in t["hours_by_skill"].items()
+        f"| {SKILL_LABELS.get(k, k)} | `{_bar(t['words_by_skill'].get(k, 0) / max(words, 1))}` "
+        f"| {t['words_by_skill'].get(k, 0) / max(words, 1) * 100:.0f}% "
+        f"| {_human(t['words_by_skill'].get(k, 0))} | {v:.1f} h |"
+        for k, v in sorted(t["hours_by_skill"].items(), key=lambda kv: -kv[1])
     )
-    events = (validation or {}).get("event_counts", {})
-    per_k = 1000 / max(words, 1)
+    events = {k: v for k, v in (validation or {}).get("event_counts", {}).items()}
+    top = max([v for k, v in events.items() if k != "normal_turn"] or [1])
     event_rows = "\n".join(
-        f"| `{k}` | {v:,} | {v * per_k:.1f} |"
-        for k, v in sorted(events.items(), key=lambda x: -x[1])
+        f"| {EVENT_LABELS.get(k, k)} | `{_bar(min(v / top, 1.0), 16)}` | {v:,} "
+        f"| {v * 1000 / max(words, 1):.1f} |"
+        for k, v in sorted(events.items(), key=lambda kv: -kv[1])
+        if k != "normal_turn"
     )
-    event_table = (
-        f"| Event | Count | Per 1,000 words |\n|---|---:|---:|\n{event_rows}"
+    events_section = (
+        f"""
+## ⚡ Full-duplex behaviour
+
+| Event | | Count | per 1K words |
+|:--|:--|--:|--:|
+{event_rows}
+"""
         if event_rows
-        else "See `events` in each row."
+        else ""
+    )
+    glance = (
+        f"| **{_human(words)}** | {_human(t['words_heard_a'])} "
+        f"| {_human(t['words_spoken_b'])} | {convs:,} | {hours:.0f} h |"
+    )
+    subtitle = (
+        f"Two synchronized channels · {manifest['sample_rate'] // 1000} kHz · "
+        f"sample-accurate turn-taking events · v{manifest['version']}"
+    )
+    split_rows = "\n".join(
+        f"| **{k}** | {t['words_by_split'].get(k, 0):,} | {v:.1f} h |"
+        for k, v in t["hours_by_split"].items()
     )
     return f"""---
 license: {pub.license}
@@ -211,7 +299,7 @@ language:
 - {cfg.dataset.language}
 pretty_name: "{name}: synthetic full-duplex spoken dialogues"
 size_categories:
-- {_size_category(t["conversations"])}
+- {_size_category(convs)}
 task_categories:
 - audio-to-audio
 - automatic-speech-recognition
@@ -229,121 +317,117 @@ configs:
 {configs}
 ---
 
-# {name} (v{manifest["version"]}): synthetic full-duplex spoken dialogues
+<div align="center">
 
-> **Fully synthetic.** Every word was written by a language model and every voice is a
-> text-to-speech voice. No real person was recorded.
+# 🗣️ {name}
 
-Two-channel conversations between a **human user** (channel A) and an **AI voice
-assistant** (channel B) for training and evaluating full-duplex spoken dialogue models:
-models that listen and speak at the same time, take turns, backchannel, interrupt and get
-interrupted.
+### {words:,} words of full-duplex conversation between a user and an AI voice assistant
 
-| | |
-|---|---:|
-| Words, total | **{words:,}** |
-| Words heard (user, channel A) | {t["words_heard_a"]:,} |
-| Words spoken (assistant, channel B) | {t["words_spoken_b"]:,} |
-| Conversations | {t["conversations"]:,} |
-| Audio | {hours:.1f} h (two channels, {manifest["sample_rate"]} Hz) |
-| Words per conversation (mean) | {words / max(t["conversations"], 1):.0f} |
+{badges}
 
-## Format
+<sub>{subtitle}</sub>
 
-Each row is one conversation:
+</div>
 
-| Field | Description |
-|---|---|
-| `channel_a` | Audio, user only, 16-bit PCM mono, {manifest["sample_rate"]} Hz |
-| `channel_b` | Audio, assistant only, same length as `channel_a` |
-| `events` | Sample-accurate events: type, speaker, start/end sample, text |
-| `words_a`, `words_b` | Words in each channel's text |
-| `skill`, `scenario`, `topic` | Primary conversational skill and scenario family |
-| `voice_a`, `voice_b` | TTS voices |
-| `metadata_json` | Full per-conversation metadata |
+---
 
-Channels are never mixed: overlapping speech appears at the same sample positions in
-both channels. Outside its own speech a channel is digital silence.
+> 🧪 **Fully synthetic.** Every word was written by an LLM and every voice is TTS.
+> No real person was recorded.
+{listen}
+## 📊 At a glance
+
+<div align="center">
+
+| 🔤 Words | 👂 Heard (user) | 🗣️ Spoken (assistant) | 💬 Conversations | ⏱️ Audio |
+|:--:|:--:|:--:|:--:|:--:|
+{glance}
+
+</div>
+
+## 🧩 Conversational skills
+
+| Skill | | Share | Words | Audio |
+|:--|:--|--:|--:|--:|
+{skill_rows}
+{events_section}
+## 🚀 Quick start
 
 ```python
 from datasets import load_dataset
 
-ds = load_dataset("<this repo>", split="train", streaming=True)
+ds = load_dataset("{repo}", split="train", streaming=True)
 row = next(iter(ds))
-row["channel_a"]["array"], row["channel_b"]["array"], row["events"]
+user, assistant = row["channel_a"]["array"], row["channel_b"]["array"]
+row["events"][:3]
 ```
 
-## Splits
+<details>
+<summary><b>📦 Row format</b></summary>
 
-Splits are fixed before synthesis and grouped by scenario family (skill x topic), so
-near-duplicate conversations never cross splits.
+| Field | Content |
+|:--|:--|
+| `channel_a` | user audio, 16-bit mono, {manifest["sample_rate"]} Hz |
+| `channel_b` | assistant audio, same length as `channel_a` |
+| `events` | `event_type`, `speaker`, `start_sample`, `end_sample`, `text` |
+| `words_a` / `words_b` | words heard / spoken |
+| `skill`, `scenario`, `topic` | what the conversation is about |
+| `voice_a` / `voice_b` | TTS voices |
 
-| Split | Words | Hours |
-|---|---:|---:|
+Channels are never mixed: overlapping speech sits at the same sample positions in both.
+
+</details>
+
+<details>
+<summary><b>🧪 How it was made</b></summary>
+
+1. 🤖 **Dialogue**: `{cfg.dialogue.model}` writes structured conversations; a validator
+   rejects broken, monologue-like or duplicate ones.
+2. 🔊 **Voices**: Kokoro-82M. Assistant always `{sc.model_voice}`; user drawn from
+   {len(sc.user_voices)} voices.
+3. 🎚️ **Timeline**: pauses, overlaps, backchannels, interruptions and cutoffs placed on two
+   channels with sample accuracy.
+4. ✅ **QC**: every conversation checked for timing, speaker isolation, clipping, silence.
+
+Code: [Manifestro/hohere](https://github.com/Manifestro/hohere)
+
+</details>
+
+<details>
+<summary><b>🗂️ Splits</b></summary>
+
+Grouped by scenario family, fixed before synthesis.
+
+| Split | Words | Audio |
+|:--|--:|--:|
 {split_rows}
 
-## Conversational skills
+</details>
 
-Each conversation is generated around one primary skill; others appear naturally too.
+<details>
+<summary><b>⚠️ Limitations</b></summary>
 
-| Skill | Words | Hours | Share | Target |
-|---|---:|---:|---:|---:|
-{skill_rows}
+- Synthetic voices, clean audio, no background noise.
+- English only.
+- Cut-off utterances keep their full `text`; the audio stops early.
 
-## Full-duplex events
+</details>
 
-{event_table}
+## 📜 License
 
-## How it was made
-
-1. **Dialogue**: `{cfg.dialogue.model}` writes each conversation as structured JSON
-   (speaker, text, intent, event, reference to the turn it reacts to). A validator rejects
-   malformed, monologue-like, duplicate or off-skill dialogues; every rejection is logged.
-2. **Speech**: Kokoro-82M. The assistant always uses one voice (`{sc.model_voice}`); the
-   user voice is drawn per conversation from {len(sc.user_voices)} voices, with small
-   speed variation.
-3. **Timeline**: utterances are placed on two channels with natural pauses, overlaps,
-   backchannels inside the other speaker's turn, interruptions that cut the interrupted
-   speaker off, self-cutoffs and self-corrections.
-4. **Quality control**: sample-accurate event checks, speaker isolation, clipping and
-   silence checks on every conversation; only passed conversations are published.
-
-Code: [Manifestro/hohere](https://github.com/Manifestro/hohere).
-
-## Intended use and limitations
-
-- **Use**: pre-training and fine-tuning full-duplex / turn-taking speech models,
-  evaluation of interruption and backchannel handling, voice activity projection.
-- **Synthetic speech**: limited voice diversity, clean studio-like audio, no background
-  noise, TTS prosody. Expect a domain gap to real conversations.
-- **English only**, everyday topics; dialogue style reflects the generating LLM.
-- A cut-off utterance keeps its full source `text`, while its audio stops early.
-
-## License and attribution
-
-**{pub.license.upper()}**, by {pub.attribution}. Please credit "{pub.attribution}, hohere"
-when you use this dataset.
-
-Generated with Qwen3 (Apache-2.0) and Kokoro-82M (Apache-2.0).
-
-## Provenance
-
-`manifest.json` lists every source file with its SHA-256, software versions and models;
-`generation_config.yaml` holds the full configuration (seed {manifest["seed"]},
-fingerprint `{manifest["config_fingerprint"]}`); `splits.json` is the split assignment.
-Schema version {manifest["schema_version"]}.
-
-## Citation
+**{pub.license.upper()}** · © {pub.attribution} · Built with Qwen3 (Apache-2.0) and Kokoro-82M
+(Apache-2.0).
 
 ```bibtex
-@misc{{hohere{manifest["version"].replace(".", "")},
-  title  = {{hohere: synthetic full-duplex spoken dialogues}},
+@misc{{{name.replace("-", "_")}_{manifest["version"].replace(".", "_")},
+  title  = {{{name}: synthetic full-duplex spoken dialogues}},
   author = {{{pub.attribution}}},
   year   = {{2026}},
   note   = {{Version {manifest["version"]}}},
-  url    = {{https://github.com/Manifestro/hohere}}
+  url    = {{https://huggingface.co/datasets/{repo}}}
 }}
 ```
+
+<div align="center"><sub>Made with ❤️ by {pub.attribution}</sub></div>
 """
 
 
