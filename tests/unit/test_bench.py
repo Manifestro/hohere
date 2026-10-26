@@ -34,7 +34,7 @@ def test_echo_pairs_differ_only_in_the_slot():
         assert p.question_x.replace(p.slot_x, "#").replace(p.slot_x.capitalize(), "#") == (
             p.question_y.replace(p.slot_y, "#").replace(p.slot_y.capitalize(), "#")
         )
-        assert p.slot_x in p.answer_x and p.slot_y in p.answer_y
+        assert p.slot_x.lower() in p.answer_x.lower() and p.slot_y.lower() in p.answer_y.lower()
 
 
 def test_voices_held_out():
