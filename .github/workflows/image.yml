@@ -35,7 +35,11 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
                       /usr/local/share/boost /usr/local/.ghcup /usr/share/swift
           sudo docker image prune --all --force
-          df -h /
+          # The root disk still runs out; /mnt has ~70 GB free, so put Docker's storage there.
+          sudo systemctl stop docker
+          echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl start docker
+          df -h / /mnt
 
       - uses: actions/checkout@v4
 
