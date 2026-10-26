@@ -1,7 +1,8 @@
 # hohere generation image for RunPod GPU pods.
 #
 # One env holds hohere, Kokoro and vLLM (a single torch; CUDA libs come with the wheels, so
-# no CUDA base image is needed). Kokoro weights, voices and the spaCy model are baked in.
+# no CUDA base image is needed; gcc is for Triton's JIT modules). Kokoro weights, voices
+# and the spaCy model are baked in.
 # Qwen weights live on the RunPod global volume. scripts/start.sh replaces RunPod's start
 # script: SSH from $PUBLIC_KEY, then vLLM, then sleep.
 #
@@ -20,7 +21,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends \
-      ca-certificates curl git openssh-server espeak-ng tmux rsync \
+      ca-certificates curl git openssh-server espeak-ng tmux rsync gcc libc6-dev \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /run/sshd \
  && curl -LsSf https://astral.sh/uv/install.sh | sh
