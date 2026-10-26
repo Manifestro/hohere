@@ -1,0 +1,62 @@
+[project]
+name = "hohere"
+version = "0.1.0"
+description = "Generate, synthesize, validate and publish synchronized two-channel conversational audio datasets."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Bagzhan", email = "bagzhankarl@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "openai>=1.40",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "rich>=13.7",
+    "soundfile>=0.12",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+# Kokoro TTS + torch. Needs the `espeak-ng` system package (apt-get install espeak-ng).
+kokoro = [
+    "kokoro>=0.9.4",
+    "misaki[en]>=0.9.4",
+]
+# Hugging Face export and publishing.
+hf = [
+    "datasets>=3.0",
+    "huggingface-hub>=0.25",
+    "pyarrow>=15",
+]
+
+[project.scripts]
+hohere = "hohere.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "external: talks to a real model server or remote service (opt-in via HOHERE_RUN_EXTERNAL=1)",
+    "kokoro: requires the kokoro extra and model weights",
+    "hf: requires the hf extra",
+]
