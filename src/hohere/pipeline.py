@@ -142,9 +142,14 @@ class Pipeline:
             # Interleave skills so that stopping at the word target keeps the skill mix.
             rng = np.random.default_rng(derive_seed(self.cfg.project.seed, "generation-order"))
             todo = [todo[i] for i in rng.permutation(len(todo))]
+            # Dialogues that later failed synthesis or audio QC never reach the dataset,
+            # so their words do not count towards the target.
             accepted_words[0] = sum(
                 sum(dialogue_words(self.store.load_dialogue(c)).values())
                 for c in self.store.accepted_dialogue_ids()
+                if not any(
+                    self.store.is_rejected(c, st) for st in ("synthesis", "compose", "audio")
+                )
             )
         if limit is not None:
             todo = todo[:limit]

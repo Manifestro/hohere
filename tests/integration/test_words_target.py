@@ -50,3 +50,24 @@ def test_words_flow_into_metadata_and_report(cfg):
     assert summary["words_heard_a"] + summary["words_spoken_b"] == summary["passed_words"]
     manifest = pipe.manifest()
     assert manifest["totals"]["words"] == summary["passed_words"]
+
+
+def test_downstream_rejections_do_not_count_towards_target(cfg):
+    from hohere.schemas.dialogue import Rejection, RejectionReason
+
+    cfg.dataset.target_words = 2_000
+    cfg.dataset.overprovision = 3.0
+    pipe = Pipeline(cfg, show_progress=False)
+    pipe.generate()
+    first = pipe.store.accepted_dialogue_ids()
+    pipe.store.save_rejection(
+        Rejection(
+            conversation_id=first[0],
+            stage="audio",
+            reasons=[RejectionReason(code="duration", message="too long")],
+        )
+    )
+    report = pipe.generate()  # tops up to replace the rejected dialogue's words
+    assert report["counts"].get("accepted", 0) >= 1
+    kept = [c for c in pipe.store.accepted_dialogue_ids() if c != first[0]]
+    assert sum(sum(dialogue_words(pipe.store.load_dialogue(c)).values()) for c in kept) >= 2_000
