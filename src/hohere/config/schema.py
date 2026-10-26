@@ -29,6 +29,8 @@ class SkillMixEntry(_Strict):
 
     share: float = Field(ge=0.0, le=1.0)
     description: str = ""
+    # Typical composed length for this skill; falls back to estimated_conversation_seconds.
+    estimated_seconds: float | None = Field(default=None, gt=0)
 
 
 def _default_skill_mix() -> dict[Skill, SkillMixEntry]:

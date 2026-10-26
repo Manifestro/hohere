@@ -216,8 +216,8 @@ def _skill_requirements(dialogue: Dialogue, cfg: HohereConfig) -> list[Rejection
             need(counts[TurnEvent.INTERRUPTION] >= 1, "interruption skill needs an interruption")
         case Skill.INCOMPLETE_THOUGHTS:
             need(
-                counts[TurnEvent.CUTOFF] + counts[TurnEvent.SELF_CORRECTION] >= 1,
-                "incomplete_thoughts needs a cutoff or self-correction",
+                counts[TurnEvent.SELF_CORRECTION] >= 1,
+                "incomplete_thoughts needs a self-correction",
             )
     return out
 

@@ -45,7 +45,8 @@ def conversations_per_skill(cfg: HohereConfig) -> dict[Skill, int]:
     out: dict[Skill, int] = {}
     for skill, entry in ds.skill_mix.items():
         seconds = ds.target_hours * 3600 * entry.share
-        out[skill] = math.ceil(seconds / ds.estimated_conversation_seconds * ds.overprovision)
+        per_conversation = entry.estimated_seconds or ds.estimated_conversation_seconds
+        out[skill] = math.ceil(seconds / per_conversation * ds.overprovision)
     return out
 
 

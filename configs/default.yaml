@@ -17,13 +17,14 @@ dataset:
   estimated_conversation_seconds: 60
   overprovision: 1.15
   # Primary conversational skill of each dialogue -> share of total hours.
+  # estimated_seconds: mean composed length per skill, measured on v0.1.
   skill_mix:
-    simple_dialogue:     {share: 0.40, description: "Questions, answers, clarifications, short exchanges."}
-    context_memory:      {share: 0.20, description: "Referring back to things said several turns earlier."}
-    turn_taking:         {share: 0.15, description: "Varied pauses, hesitation, waiting for a reply."}
-    backchannel:         {share: 0.10, description: "'mm-hm', 'right', 'I see' during the other's speech."}
-    interruption:        {share: 0.10, description: "Stopping an answer, clarifying, changing direction."}
-    incomplete_thoughts: {share: 0.05, description: "Self-correction, resuming an abandoned sentence."}
+    simple_dialogue:     {share: 0.40, estimated_seconds: 70, description: "Questions, answers, clarifications, short exchanges."}
+    context_memory:      {share: 0.20, estimated_seconds: 105, description: "Referring back to things said several turns earlier."}
+    turn_taking:         {share: 0.15, estimated_seconds: 85, description: "Varied pauses, hesitation, waiting for a reply."}
+    backchannel:         {share: 0.10, estimated_seconds: 90, description: "'mm-hm', 'right', 'I see' during the other's speech."}
+    interruption:        {share: 0.10, estimated_seconds: 100, description: "Stopping an answer, clarifying, changing direction."}
+    incomplete_thoughts: {share: 0.05, estimated_seconds: 75, description: "Self-correction, resuming an abandoned sentence."}
   # topics: [...]   # defaults to hohere/config/topics.py
 
 dialogue:

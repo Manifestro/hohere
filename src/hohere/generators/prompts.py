@@ -67,7 +67,8 @@ General rules:
 - Exactly two speakers: A (user) and B (assistant). The first turn is "normal" by A.
 - Turn ids are t1, t2, t3, ... in order. "ref" must point to an earlier id.
 - Backchannels do not take the floor and never replace a real reply: they are extra
-  reactions placed inside the other speaker's long turn.
+  reactions placed inside the other speaker's long turn. Unless the skill says otherwise,
+  add one or two natural backchannels where someone is explaining at length.
 - This is a DIALOGUE, not a monologue: BOTH speakers hold the floor with real "normal"
   turns. Each speaker has at least a fifth of the spoken words, and neither speaker has
   more than three normal turns in a row.
@@ -101,7 +102,12 @@ of 15-40 words while the assistant reacts with short backchannels during their s
 later the assistant explains something (steps, a suggestion) while the user backchannels.
 Both speakers have long turns of their own and both produce backchannels. Include at
 least three "backchannel" turns, each with "ref" pointing to a long turn of the other
-speaker.""",
+speaker. A backchannel is its own JSON turn right after the turn it reacts to, e.g.:
+  {"id": "t3", "speaker": "A", "text": "So the leak started last night, and now there's
+   water under the whole cabinet and the floor's getting soft.", "event": "normal"},
+  {"id": "t4", "speaker": "B", "text": "Oh no.", "event": "backchannel", "ref": "t3"},
+  {"id": "t5", "speaker": "B", "text": "Okay, first, turn off the valve under the sink.",
+   "event": "normal"}""",
     Skill.INTERRUPTION: """\
 Primary skill: INTERRUPTIONS.
 The user interrupts the assistant mid-answer to correct a misunderstanding, add a detail
@@ -115,7 +121,11 @@ The user abandons sentences ("so I was thinking maybe we could, um"), restarts t
 differently, and corrects themselves ("sorry, Thursday, not Tuesday"). The assistant
 follows along and confirms the corrected version. Include at least one "cutoff" turn
 later resumed or rephrased by the same speaker, and at least one "self_correction" turn
-that revises an earlier statement of the same speaker.""",
+that revises an earlier statement of the same speaker, e.g.:
+  {"id": "t1", "speaker": "A", "text": "I need a table for four on Friday.", ...},
+  ...
+  {"id": "t5", "speaker": "A", "text": "Oh wait, sorry, I meant Saturday, not Friday.",
+   "event": "self_correction", "ref": "t1"}""",
 }
 
 USER_PERSONAS = [
