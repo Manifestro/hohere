@@ -7,6 +7,7 @@ import numpy as np
 import soundfile as sf
 
 SR = 24000
+print("loading model... (stray library output)", flush=True)
 print(json.dumps({"ready": True, "sr": SR, "model": "fake"}), flush=True)
 for line in sys.stdin:
     req = json.loads(line)

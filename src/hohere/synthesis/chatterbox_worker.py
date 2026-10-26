@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import traceback
 
@@ -23,6 +24,12 @@ def main() -> None:
     ap.add_argument("--variant", choices=["turbo", "orig"], default="turbo")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
+
+    # The protocol gets a private copy of stdout; everything else written to fd 1 (library
+    # prints, progress bars, C extensions) is redirected to stderr from here on.
+    out = os.fdopen(os.dup(1), "w", buffering=1)
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
 
     import torch
     import torchaudio as ta
@@ -36,9 +43,6 @@ def main() -> None:
 
         model_id = "ResembleAI/chatterbox"
     model = Model.from_pretrained(device=args.device)
-    out = sys.stdout
-    # Keep library chatter off the protocol channel.
-    sys.stdout = sys.stderr
     out.write(json.dumps({"ready": True, "sr": model.sr, "model": model_id}) + "\n")
     out.flush()
 

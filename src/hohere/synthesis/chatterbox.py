@@ -79,11 +79,14 @@ class ChatterboxSynthesizer:
         return self._proc
 
     def _read_line(self) -> str:
+        """Next protocol (JSON) line; stray non-JSON output is skipped."""
         assert self._proc is not None and self._proc.stdout is not None
-        line = self._proc.stdout.readline()
-        if not line:
-            raise SynthesisError(f"chatterbox worker exited (code {self._proc.poll()})")
-        return line
+        while True:
+            line = self._proc.stdout.readline()
+            if not line:
+                raise SynthesisError(f"chatterbox worker exited (code {self._proc.poll()})")
+            if line.lstrip().startswith("{"):
+                return line
 
     def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
         # Chatterbox has no speed control; the model voice is always synthesized at 1.0.
