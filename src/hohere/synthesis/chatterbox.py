@@ -50,7 +50,11 @@ class ChatterboxSynthesizer:
                     "no Chatterbox env: set speech.chatterbox_python or $HOHERE_CHATTERBOX_PYTHON "
                     "(create it with scripts/setup_chatterbox.sh)"
                 )
-            worker_cmd = [python, str(WORKER), "--variant", variant, "--device", device or "cuda"]
+            # -I: keep the script's directory off sys.path, otherwise our chatterbox.py
+            # next to the worker shadows the `chatterbox` library.
+            worker_cmd = [
+                python, "-I", str(WORKER), "--variant", variant, "--device", device or "cuda",
+            ]  # fmt: skip
         self._cmd = worker_cmd
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
