@@ -8,7 +8,6 @@ MODEL="${HOHERE_QWEN_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507-FP8}"
 PORT="${HOHERE_QWEN_PORT:-8000}"
 GPU_UTIL="${HOHERE_VLLM_GPU_UTIL:-0.80}"
 MAX_LEN="${HOHERE_VLLM_MAX_LEN:-16384}"
-VLLM_ENV=/workspace/vllm-env
 
 export PATH="$HOME/.local/bin:$PATH"
 export UV_CACHE_DIR=/workspace/uv-cache
@@ -30,21 +29,16 @@ if ! command -v uv > /dev/null; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
-log "syncing project env"
-uv sync --all-extras --quiet
-
-if [ ! -x "$VLLM_ENV/bin/vllm" ]; then
-  log "creating vLLM env (one-time, several minutes)"
-  uv venv "$VLLM_ENV" --python 3.12 --quiet
-  VIRTUAL_ENV="$VLLM_ENV" uv pip install --quiet vllm ninja
-fi
+log "syncing project env (hohere + Kokoro + vLLM, one torch)"
+uv sync --frozen --all-extras --quiet
 
 if curl -sf -m 5 "localhost:$PORT/v1/models" > /dev/null; then
   log "vLLM already serving on :$PORT"
 else
   log "starting vLLM: $MODEL"
-  # The venv must be on PATH: FlashInfer JIT-builds kernels with the venv's ninja.
-  PATH="$VLLM_ENV/bin:$PATH" setsid nohup vllm serve "$MODEL" \
+  # The venv must be on PATH (ninja for JIT kernels); the default sampler avoids
+  # FlashInfer's sampling JIT build on first start.
+  PATH="$PWD/.venv/bin:$PATH" VLLM_USE_FLASHINFER_SAMPLER=0 setsid nohup vllm serve "$MODEL" \
     --port "$PORT" --max-model-len "$MAX_LEN" --gpu-memory-utilization "$GPU_UTIL" \
     > /workspace/vllm.log 2>&1 < /dev/null &
   for _ in $(seq 1 120); do

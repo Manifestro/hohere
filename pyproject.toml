@@ -27,6 +27,11 @@ kokoro = [
     # misaki downloads this at runtime otherwise, and `uv sync` would then remove it.
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
 ]
+# Qwen server (vLLM) in the same env as Kokoro, so the GPU image needs only one torch.
+# Linux only: never installed on a Mac.
+serve = [
+    "vllm==0.32.0; sys_platform == 'linux'",
+]
 # Hugging Face export and publishing.
 hf = [
     "datasets>=3.0",

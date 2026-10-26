@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run by RunPod's /start.sh after sshd is up (baked into the image as /post_start.sh).
+# Run by scripts/start.sh (the image entrypoint) after sshd is up.
 # Starts vLLM on the Qwen weights stored on the global volume, in the background.
 #
 #   HOHERE_QWEN_MODEL_DIR  weights dir on the volume  (default /models/Qwen3-30B-A3B-Instruct-2507-FP8)
@@ -23,7 +23,7 @@ fi
 echo "[post_start] starting vLLM: $SERVED from $MODEL_DIR"
 # The venv must be on PATH (ninja for any JIT kernels). The FlashInfer sampler is the
 # only kernel that needed JIT compilation on L40S; the default sampler skips that wait.
-PATH="$VLLM_ENV/bin:$PATH" VLLM_USE_FLASHINFER_SAMPLER=0 setsid nohup \
+PATH="/opt/hohere/.venv/bin:$PATH" VLLM_USE_FLASHINFER_SAMPLER=0 setsid nohup \
   vllm serve "$MODEL_DIR" --served-model-name "$SERVED" \
   --port "$PORT" \
   --max-model-len "${HOHERE_VLLM_MAX_LEN:-16384}" \

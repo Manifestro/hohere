@@ -1,46 +1,42 @@
 # hohere generation image for RunPod GPU pods.
 #
-# Everything slow is baked in: system packages, the project env (Kokoro + torch), a separate
-# vLLM env, Kokoro weights and the spaCy model. Qwen weights live on the RunPod global
-# volume, so a fresh pod only loads weights and starts generating.
+# One env holds hohere, Kokoro and vLLM (a single torch; CUDA libs come with the wheels, so
+# no CUDA base image is needed). Kokoro weights, voices and the spaCy model are baked in.
+# Qwen weights live on the RunPod global volume. scripts/start.sh replaces RunPod's start
+# script: SSH from $PUBLIC_KEY, then vLLM, then sleep.
 #
 # Built by .github/workflows/image.yml; never build locally.
 
-FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+FROM ubuntu:24.04
 
-ARG VLLM_VERSION=0.32.0
 ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
+    UV_NO_CACHE=1 \
     UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     HF_HOME=/opt/hf-cache \
     HOHERE_HOME=/opt/hohere \
-    VLLM_ENV=/opt/vllm-env \
-    PATH=/root/.local/bin:$PATH
+    PATH=/opt/hohere/.venv/bin:/root/.local/bin:$PATH
 
 RUN apt-get update -qq \
- && apt-get install -y -qq --no-install-recommends espeak-ng tmux \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y -qq --no-install-recommends \
+      ca-certificates curl git openssh-server espeak-ng tmux rsync \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /run/sshd \
+ && curl -LsSf https://astral.sh/uv/install.sh | sh
 
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# vLLM in its own env so its torch pin never clashes with Kokoro's.
-RUN uv venv "$VLLM_ENV" --python 3.12 \
- && VIRTUAL_ENV="$VLLM_ENV" uv pip install --no-cache "vllm==${VLLM_VERSION}" ninja
-
-# Project env from the lockfile (deps first for layer caching, then the source).
+# Dependencies first (cached layer), then the source.
 WORKDIR /opt/hohere
 COPY pyproject.toml uv.lock .python-version README.md LICENSE ./
-RUN uv sync --frozen --all-extras --no-install-project --no-cache
+RUN uv sync --frozen --all-extras --no-install-project
 COPY src ./src
 COPY configs ./configs
 COPY scripts ./scripts
 COPY tests ./tests
-RUN uv sync --frozen --all-extras --no-cache
+RUN uv sync --frozen --all-extras \
+ && chmod +x scripts/*.sh
 
-# Bake Kokoro weights, all voices we use and spaCy's English model (misaki fetches it lazily).
+# Bake Kokoro weights and every voice we use.
 RUN uv run --no-sync python scripts/prefetch_kokoro.py
 
-# RunPod's /start.sh runs /post_start.sh after sshd is up: start vLLM there.
-COPY scripts/post_start.sh /post_start.sh
-RUN chmod +x /post_start.sh scripts/*.sh
+CMD ["/opt/hohere/scripts/start.sh"]
