@@ -184,7 +184,7 @@ def _human(n: float) -> str:
 
 def _badge(label: str, value: str, color: str) -> str:
     def enc(t: str) -> str:
-        return t.replace("-", "--").replace("_", "__").replace(" ", "%20")
+        return t.replace("%", "%25").replace("-", "--").replace("_", "__").replace(" ", "%20")
 
     return (
         f'<img alt="{label}: {value}" src="https://img.shields.io/badge/'
@@ -263,11 +263,15 @@ def dataset_card(
         for k, v in sorted(t["hours_by_skill"].items(), key=lambda kv: -kv[1])
     )
     events = {k: v for k, v in (validation or {}).get("event_counts", {}).items()}
-    top = max([v for k, v in events.items() if k != "normal_turn"] or [1])
+    pauses = {"short_pause", "long_pause"}
+    # Bars compare the duplex events; pauses are far more frequent and listed without a bar.
+    top = max([v for k, v in events.items() if k not in pauses | {"normal_turn"}] or [1])
+    ordered = sorted(events.items(), key=lambda kv: (kv[0] in pauses, -kv[1]))
     event_rows = "\n".join(
-        f"| {EVENT_LABELS.get(k, k)} | `{_bar(min(v / top, 1.0), 16)}` | {v:,} "
+        f"| {EVENT_LABELS.get(k, k)} | "
+        f"{'' if k in pauses else '`' + _bar(min(v / top, 1.0), 16) + '`'} | {v:,} "
         f"| {v * 1000 / max(words, 1):.1f} |"
-        for k, v in sorted(events.items(), key=lambda kv: -kv[1])
+        for k, v in ordered
         if k != "normal_turn"
     )
     events_section = (
