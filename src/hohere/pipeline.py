@@ -202,9 +202,15 @@ class Pipeline:
 
     # -- synthesize --------------------------------------------------------------
 
-    def synthesize(self, limit: int | None = None, shard: tuple[int, int] | None = None) -> dict:
+    def synthesize(
+        self,
+        limit: int | None = None,
+        shard: tuple[int, int] | None = None,
+        warm_speaker: str | None = None,
+    ) -> dict:
         """`shard=(i, n)` processes every n-th accepted dialogue starting at i, so n worker
-        processes can share one GPU without overlapping."""
+        processes can share one GPU without overlapping. `warm_speaker` only fills the TTS
+        cache with that speaker's turns (no segments are written)."""
         started = time.time()
         sc = self.cfg.speech
         runner = SynthesisRunner(
@@ -224,6 +230,17 @@ class Pipeline:
         if limit is not None:
             ids = ids[:limit]
         counts: Counter[str] = Counter()
+        if warm_speaker is not None:
+            for cid in _progress(ids, len(ids), f"warm {warm_speaker}", self.show_progress):
+                try:
+                    runner.warm_cache(self.store.load_dialogue(cid), warm_speaker)
+                    counts["warmed"] += 1
+                except SynthesisError as e:  # the full pass will retry and record it
+                    log.warning("warm-up failed for %s: %s", cid, e)
+                    counts["warm_errors"] += 1
+            counts["cache_hits"] = runner.cache_hits
+            counts["cache_misses"] = runner.cache_misses
+            return self._report(f"warm_{warm_speaker}", started, dict(counts))
         for cid in _progress(ids, len(ids), "synthesize", self.show_progress):
             dialogue = self.store.load_dialogue(cid)
             try:

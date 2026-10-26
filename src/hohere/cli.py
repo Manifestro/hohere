@@ -76,9 +76,12 @@ def _load(config: Path, dataset: Path | None = None, verbose: bool = False) -> H
 
 
 def _pipeline(cfg: HohereConfig):
+    import os
+
     from hohere.pipeline import Pipeline
 
-    return Pipeline(cfg)
+    # Parallel workers set HOHERE_PROGRESS=0 so their bars do not overwrite each other.
+    return Pipeline(cfg, show_progress=os.environ.get("HOHERE_PROGRESS", "1") != "0")
 
 
 def _print_counts(title: str, counts: dict) -> None:
@@ -143,17 +146,68 @@ def synthesize(
         str | None,
         typer.Option("--shard", help="i/n: run worker i of n in parallel (e.g. 0/3, 1/3, 2/3)."),
     ] = None,
+    workers: Annotated[
+        int,
+        typer.Option(
+            "--workers",
+            "-w",
+            min=1,
+            help="Run N worker processes on this machine (user voices are cached first).",
+        ),
+    ] = 1,
+    warm: Annotated[
+        str | None,
+        typer.Option("--warm", help="Only fill the TTS cache for one speaker (A or B)."),
+    ] = None,
     verbose: bool = False,
 ) -> None:
     """Synthesize every accepted dialogue (user voices + model voice)."""
+    if workers > 1:
+        _synthesize_workers(config, dataset, workers, verbose)
+        return
     parsed = None
     if shard:
         i, n = (int(x) for x in shard.split("/"))
         if not 0 <= i < n:
             raise typer.BadParameter("shard must be i/n with 0 <= i < n")
         parsed = (i, n)
-    report = _pipeline(_load(config, dataset, verbose)).synthesize(limit, shard=parsed)
-    _print_counts("synthesize", report["counts"])
+    if warm is not None and warm not in ("A", "B"):
+        raise typer.BadParameter("--warm must be A or B")
+    pipe = _pipeline(_load(config, dataset, verbose))
+    report = pipe.synthesize(limit, shard=parsed, warm_speaker=warm)
+    _print_counts(f"warm {warm}" if warm else "synthesize", report["counts"])
+
+
+def _synthesize_workers(config: Path, dataset: Path | None, workers: int, verbose: bool) -> None:
+    """Warm the user-voice cache in one process, then run `workers` shards in parallel.
+
+    Each stage is a separate process so GPU memory is released between them: the shard
+    workers find every user turn cached and only load the model-voice TTS.
+    """
+    import subprocess
+
+    base = [sys.executable, "-m", "hohere", "synthesize", "--config", str(config)]
+    if dataset is not None:
+        base += ["--dataset", str(dataset)]
+    if verbose:
+        base.append("--verbose")
+    console.print("[bold]warming user-voice cache (speaker A)[/]")
+    if subprocess.run([*base, "--warm", "A"]).returncode != 0:
+        console.print("[red]warm-up failed[/]")
+        raise typer.Exit(1)
+    console.print(f"[bold]starting {workers} synthesis workers[/]")
+    import os
+
+    quiet = {**os.environ, "HOHERE_PROGRESS": "0"}
+    procs = [
+        subprocess.Popen([*base, "--shard", f"{i}/{workers}"], env=None if i == 0 else quiet)
+        for i in range(workers)
+    ]
+    codes = [p.wait() for p in procs]
+    if any(codes):
+        console.print(f"[red]workers exited with {codes}; re-run to resume[/]")
+        raise typer.Exit(1)
+    console.print("[green]all workers finished[/]")
 
 
 @app.command()
@@ -236,6 +290,67 @@ def publish(
         console.print(f"[red]publish failed:[/] {e}")
         raise typer.Exit(1) from e
     _print_counts("published", result)
+
+
+dialogues_app = typer.Typer(
+    help="Move generated dialogues between machines (text on a GPU server, audio at home).",
+    no_args_is_help=True,
+)
+app.add_typer(dialogues_app, name="dialogues")
+RepoOpt = Annotated[str, typer.Option("--repo-id", help="Private HF dataset repo for dialogues.")]
+PrefixOpt = Annotated[
+    str | None, typer.Option("--prefix", help="Folder in the repo (default: v<dataset_version>).")
+]
+
+
+@dialogues_app.command("push")
+def dialogues_push(
+    config: ConfigOpt = Path("configs/default.yaml"),
+    dataset: DatasetOpt = None,
+    repo_id: RepoOpt = "manifestro/hohere-dialogues",
+    prefix: PrefixOpt = None,
+) -> None:
+    """Upload plan, splits and dialogues (no audio) to a private HF repo."""
+    from hohere.publishing.huggingface import PublishError, push_dialogues
+    from hohere.storage.local import DatasetStore
+
+    cfg = _load(config, dataset)
+    try:
+        result = push_dialogues(
+            DatasetStore(cfg.dataset.output_dir),
+            repo_id,
+            prefix or f"v{cfg.project.dataset_version}",
+            cfg.publishing.token_env,
+        )
+    except PublishError as e:
+        console.print(f"[red]push failed:[/] {e}")
+        raise typer.Exit(1) from e
+    _print_counts("dialogues pushed", result)
+
+
+@dialogues_app.command("pull")
+def dialogues_pull(
+    config: ConfigOpt = Path("configs/default.yaml"),
+    dataset: DatasetOpt = None,
+    repo_id: RepoOpt = "manifestro/hohere-dialogues",
+    prefix: PrefixOpt = None,
+) -> None:
+    """Download plan, splits and dialogues into the local output dir, ready to synthesize."""
+    from hohere.publishing.huggingface import PublishError, pull_dialogues
+    from hohere.storage.local import DatasetStore
+
+    cfg = _load(config, dataset)
+    try:
+        result = pull_dialogues(
+            DatasetStore(cfg.dataset.output_dir),
+            repo_id,
+            prefix or f"v{cfg.project.dataset_version}",
+            cfg.publishing.token_env,
+        )
+    except PublishError as e:
+        console.print(f"[red]pull failed:[/] {e}")
+        raise typer.Exit(1) from e
+    _print_counts("dialogues pulled", result)
 
 
 @app.command()

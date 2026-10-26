@@ -11,7 +11,7 @@ from hohere.schemas.dialogue import Skill
 from tests.conftest import ROOT
 
 
-@pytest.mark.parametrize("name", ["default", "smoke", "production", "mock"])
+@pytest.mark.parametrize("name", ["default", "smoke", "production", "mock", "v0.2", "v0.3"])
 def test_shipped_configs_load(name):
     cfg = load_config(ROOT / "configs" / f"{name}.yaml")
     assert cfg.speech.sample_rate == 24000

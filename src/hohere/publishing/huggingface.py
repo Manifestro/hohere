@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -302,3 +303,63 @@ def verify_remote(api, repo_id: str, export_dir: Path, manifest: dict) -> list[s
     if local_manifest["export"]["files"] != manifest["export"]["files"]:
         problems.append("local manifest changed during upload")
     return problems
+
+
+# -- dialogue hand-off: text generated on one machine, audio synthesized on another ------
+
+DIALOGUE_PATTERNS = ("plan.json", "splits.json", "reports/plan_summary.json", "dialogues/**")
+
+
+def push_dialogues(
+    store: DatasetStore, repo_id: str, prefix: str, token_env: str = "HF_TOKEN"
+) -> dict:
+    """Upload the plan, split manifest and all dialogues (accepted + rejected) under
+    `prefix/` of a private dataset repo. No audio is uploaded."""
+    if not store.plan_path.exists():
+        raise PublishError(f"nothing to push: no plan in {store.root}")
+    api = _api(token_env)
+    api.create_repo(repo_id, repo_type="dataset", private=True, exist_ok=True)
+    if not api.repo_info(repo_id, repo_type="dataset").private:
+        raise PublishError(f"{repo_id} is PUBLIC; refusing to upload dialogues")
+    n = len(store.accepted_dialogue_ids())
+    api.upload_folder(
+        folder_path=str(store.root),
+        repo_id=repo_id,
+        repo_type="dataset",
+        path_in_repo=prefix,
+        allow_patterns=list(DIALOGUE_PATTERNS),
+        commit_message=f"{prefix}: {n} accepted dialogues",
+    )
+    return {"repo_id": repo_id, "prefix": prefix, "accepted_dialogues": n}
+
+
+def pull_dialogues(
+    store: DatasetStore, repo_id: str, prefix: str, token_env: str = "HF_TOKEN"
+) -> dict:
+    """Download `prefix/` from the dialogue repo into the local store. Refuses to merge
+    into a store whose split manifest differs (splits are immutable)."""
+    from huggingface_hub import snapshot_download
+
+    _api(token_env)  # import check + auth
+    with tempfile.TemporaryDirectory() as tmp:
+        snapshot_download(
+            repo_id,
+            repo_type="dataset",
+            local_dir=tmp,
+            allow_patterns=[f"{prefix}/{p}" for p in DIALOGUE_PATTERNS],
+            token=os.environ.get(token_env) or None,
+        )
+        src = Path(tmp) / prefix
+        if not (src / "plan.json").exists():
+            raise PublishError(f"{repo_id} has no {prefix}/plan.json")
+        if store.splits_path.exists() and read_json(store.splits_path) != read_json(
+            src / "splits.json"
+        ):
+            raise PublishError(f"{store.splits_path} differs from {repo_id}/{prefix}")
+        store.root.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, store.root, dirs_exist_ok=True)
+    return {
+        "repo_id": repo_id,
+        "prefix": prefix,
+        "accepted_dialogues": len(store.accepted_dialogue_ids()),
+    }

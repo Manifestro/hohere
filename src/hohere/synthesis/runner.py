@@ -107,24 +107,34 @@ class SynthesisRunner:
                     time.sleep(min(8.0, 0.5 * 2**attempt))
         raise SynthesisError(f"synthesis failed after retries: {last}") from last
 
+    def _raw_audio(self, turn, assignment: VoiceAssignment, seed: int):
+        """Cached-or-synthesized raw audio for one turn: (cache_key, voice, speed, audio)."""
+        voice = assignment.voices[turn.speaker]
+        speed = self._utterance_speed(turn.speaker, assignment.speeds[turn.speaker], turn.id, seed)
+        backend = self.tts.backend(voice) if hasattr(self.tts, "backend") else self.tts
+        key = cache_key(backend.name, backend.model, voice, speed, turn.text)
+        raw = self.cache.get(key)
+        if raw is None:
+            self.cache_misses += 1
+            raw = self._synthesize_with_retries(turn.text, voice, speed)
+            self.cache.put(key, raw)
+        else:
+            self.cache_hits += 1
+        return key, voice, speed, raw
+
+    def warm_cache(self, dialogue: Dialogue, speaker: str) -> None:
+        """Synthesize only `speaker`'s turns into the cache (no segments). Running the user
+        voices first lets the model-voice workers later skip loading the user TTS at all."""
+        assignment = assign_voices(dialogue, self.cfg)
+        for turn in dialogue.turns:
+            if turn.speaker == speaker:
+                self._raw_audio(turn, assignment, dialogue.seed)
+
     def synthesize_dialogue(self, dialogue: Dialogue) -> tuple[VoiceAssignment, list[Segment]]:
         assignment = assign_voices(dialogue, self.cfg)
         segments: list[Segment] = []
         for turn in dialogue.turns:
-            voice = assignment.voices[turn.speaker]
-            speed = self._utterance_speed(
-                turn.speaker, assignment.speeds[turn.speaker], turn.id, dialogue.seed
-            )
-            backend = self.tts.backend(voice) if hasattr(self.tts, "backend") else self.tts
-            key = cache_key(backend.name, backend.model, voice, speed, turn.text)
-            raw = self.cache.get(key)
-            if raw is None:
-                self.cache_misses += 1
-                raw = self._synthesize_with_retries(turn.text, voice, speed)
-                self.cache.put(key, raw)
-            else:
-                self.cache_hits += 1
-            audio = raw
+            key, voice, speed, audio = self._raw_audio(turn, assignment, dialogue.seed)
             if self.cfg.trim_silence:
                 audio = trim_silence(
                     audio,
