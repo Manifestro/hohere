@@ -136,6 +136,11 @@ class SpeechConfig(_Strict):
     # Speaker B (AI assistant): fixed voice and speed in every conversation.
     model_voice: str = MODEL_VOICE
     model_speed: float = Field(default=1.0, gt=0)
+    # TTS for speaker B. "same" uses `provider`; chatterbox_* clone model_reference_audio in
+    # an isolated worker env (scripts/setup_chatterbox.sh, $HOHERE_CHATTERBOX_PYTHON).
+    model_provider: Literal["same", "chatterbox_turbo", "chatterbox", "mock"] = "same"
+    model_reference_audio: Path | None = None
+    chatterbox_python: str | None = None
     # Speaker A (human user): voice drawn per conversation, speed in [speed_min, speed_max].
     user_voices: list[str] = Field(default_factory=lambda: list(DEFAULT_USER_VOICES))
     speed_min: float = 0.95
@@ -156,6 +161,11 @@ class SpeechConfig(_Strict):
             raise ValueError("user_voices must not be empty")
         if self.model_voice in self.user_voices:
             raise ValueError(f"model_voice {self.model_voice!r} must not be in user_voices")
+        if self.model_provider.startswith("chatterbox"):
+            if self.model_reference_audio is None:
+                raise ValueError("chatterbox model_provider needs model_reference_audio")
+            if self.model_speed != 1.0:
+                raise ValueError("chatterbox has no speed control: model_speed must be 1.0")
         return self
 
     @property

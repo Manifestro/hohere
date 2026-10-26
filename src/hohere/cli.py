@@ -139,10 +139,20 @@ def synthesize(
     config: ConfigOpt = Path("configs/default.yaml"),
     dataset: DatasetOpt = None,
     limit: LimitOpt = None,
+    shard: Annotated[
+        str | None,
+        typer.Option("--shard", help="i/n: run worker i of n in parallel (e.g. 0/3, 1/3, 2/3)."),
+    ] = None,
     verbose: bool = False,
 ) -> None:
-    """Synthesize every accepted dialogue with Kokoro."""
-    report = _pipeline(_load(config, dataset, verbose)).synthesize(limit)
+    """Synthesize every accepted dialogue (user voices + model voice)."""
+    parsed = None
+    if shard:
+        i, n = (int(x) for x in shard.split("/"))
+        if not 0 <= i < n:
+            raise typer.BadParameter("shard must be i/n with 0 <= i < n")
+        parsed = (i, n)
+    report = _pipeline(_load(config, dataset, verbose)).synthesize(limit, shard=parsed)
     _print_counts("synthesize", report["counts"])
 
 

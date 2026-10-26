@@ -202,7 +202,9 @@ class Pipeline:
 
     # -- synthesize --------------------------------------------------------------
 
-    def synthesize(self, limit: int | None = None) -> dict:
+    def synthesize(self, limit: int | None = None, shard: tuple[int, int] | None = None) -> dict:
+        """`shard=(i, n)` processes every n-th accepted dialogue starting at i, so n worker
+        processes can share one GPU without overlapping."""
         started = time.time()
         sc = self.cfg.speech
         runner = SynthesisRunner(
@@ -210,9 +212,13 @@ class Pipeline:
             self.synthesizer,
             AudioCache(Path(self.cfg.dataset.cache_dir) / "tts", sc.sample_rate),
         )
+        accepted = self.store.accepted_dialogue_ids()
+        if shard is not None:
+            i, n = shard
+            accepted = accepted[i::n]
         ids = [
             cid
-            for cid in self.store.accepted_dialogue_ids()
+            for cid in accepted
             if not self.store.has_segments(cid) and not self.store.is_rejected(cid, "synthesis")
         ]
         if limit is not None:
@@ -299,6 +305,7 @@ class Pipeline:
                     "speech_model": self.cfg.speech.model
                     if self.cfg.speech.provider != "mock"
                     else "mock-tts-v1",
+                    "model_voice_speech": self.cfg.speech.model_provider,
                 },
                 split=dialogue.split,
                 quality_status=status,

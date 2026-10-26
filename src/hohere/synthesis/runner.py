@@ -115,7 +115,8 @@ class SynthesisRunner:
             speed = self._utterance_speed(
                 turn.speaker, assignment.speeds[turn.speaker], turn.id, dialogue.seed
             )
-            key = cache_key(self.tts.name, self.tts.model, voice, speed, turn.text)
+            backend = self.tts.backend(voice) if hasattr(self.tts, "backend") else self.tts
+            key = cache_key(backend.name, backend.model, voice, speed, turn.text)
             raw = self.cache.get(key)
             if raw is None:
                 self.cache_misses += 1
