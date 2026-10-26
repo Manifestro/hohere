@@ -240,6 +240,9 @@ class PublishingConfig(_Strict):
     repository_id: str | None = None
     include_text: bool = True
     token_env: str = "HF_TOKEN"
+    # Dataset license (Hugging Face license id), written into the dataset card.
+    license: str = "cc-by-4.0"
+    attribution: str = "Manifestro"
 
 
 class HohereConfig(_Strict):

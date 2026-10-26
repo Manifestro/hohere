@@ -89,6 +89,6 @@ quality:
 publishing:
   provider: huggingface
   private: true
-  repository_id: manifestro/hohere-dataset-v0.3
+  repository_id: manifestro/hohere-1m
   include_text: true
   token_env: HF_TOKEN

@@ -159,81 +159,191 @@ def export_dataset(
     if report.exists():
         (out_dir / "reports").mkdir(exist_ok=True)
         shutil.copy2(report, out_dir / "reports" / "validation.json")
-    (out_dir / "README.md").write_text(dataset_card(cfg, manifest, shard_files))
+    validation = read_json(report)["summary"] if report.exists() else None
+    (out_dir / "README.md").write_text(dataset_card(cfg, manifest, shard_files, validation))
     return manifest
 
 
-def dataset_card(cfg: HohereConfig, manifest: dict, shard_files: dict[str, list[str]]) -> str:
+def _size_category(n: int) -> str:
+    for limit, label in ((1_000, "n<1K"), (10_000, "1K<n<10K"), (100_000, "10K<n<100K")):
+        if n < limit:
+            return label
+    return "100K<n<1M"
+
+
+def dataset_card(
+    cfg: HohereConfig,
+    manifest: dict,
+    shard_files: dict[str, list[str]],
+    validation: dict | None = None,
+) -> str:
     t = manifest["totals"]
+    pub, sc = cfg.publishing, cfg.speech
+    name = (pub.repository_id or cfg.project.name).split("/")[-1]
+    words, hours = t["words"], t["hours"]
     configs = "\n".join(
         f"  - split: {split}\n    path: data/{split}-*.parquet" for split in shard_files
     )
-    hours_split = "\n".join(f"| {k} | {v:.2f} |" for k, v in t["hours_by_split"].items())
-    hours_skill = "\n".join(
-        f"| {k} | {v:.2f} | {t['target_share_by_skill'].get(k, 0) * 100:.0f}% |"
+    split_rows = "\n".join(
+        f"| {k} | {t['words_by_split'].get(k, 0):,} | {v:.1f} |"
+        for k, v in t["hours_by_split"].items()
+    )
+    skill_rows = "\n".join(
+        f"| `{k}` | {t['words_by_skill'].get(k, 0):,} | {v:.1f} | "
+        f"{t['words_by_skill'].get(k, 0) / max(words, 1) * 100:.0f}% | "
+        f"{t['target_share_by_skill'].get(k, 0) * 100:.0f}% |"
         for k, v in t["hours_by_skill"].items()
     )
+    events = (validation or {}).get("event_counts", {})
+    per_k = 1000 / max(words, 1)
+    event_rows = "\n".join(
+        f"| `{k}` | {v:,} | {v * per_k:.1f} |"
+        for k, v in sorted(events.items(), key=lambda x: -x[1])
+    )
+    event_table = (
+        f"| Event | Count | Per 1,000 words |\n|---|---:|---:|\n{event_rows}"
+        if event_rows
+        else "See `events` in each row."
+    )
     return f"""---
-license: mit
+license: {pub.license}
 language:
 - {cfg.dataset.language}
+pretty_name: "{name}: synthetic full-duplex spoken dialogues"
+size_categories:
+- {_size_category(t["conversations"])}
 task_categories:
 - audio-to-audio
 - automatic-speech-recognition
 tags:
 - full-duplex
 - spoken-dialogue
+- conversational
+- turn-taking
+- voice-assistant
 - synthetic
 - two-channel
-pretty_name: {cfg.project.name}
 configs:
 - config_name: default
   data_files:
 {configs}
 ---
 
-# {cfg.project.name} v{manifest["version"]}
+# {name} (v{manifest["version"]}): synthetic full-duplex spoken dialogues
 
-Synthetic two-speaker conversational audio with realistic full-duplex behaviour:
-pauses, overlaps, backchannels, interruptions, cutoffs and self-corrections.
+> **Fully synthetic.** Every word was written by a language model and every voice is a
+> text-to-speech voice. No real person was recorded.
 
-Each row holds **two synchronized mono channels** (`channel_a` = speaker A,
-`channel_b` = speaker B), 16-bit PCM at {manifest["sample_rate"]} Hz, of identical length.
-Each channel contains only its own speaker; overlapping speech appears at the same
-sample positions in both channels, never mixed. `events` gives sample-accurate
-annotations (`start_sample`/`end_sample`, inclusive/exclusive).
+Two-channel conversations between a **human user** (channel A) and an **AI voice
+assistant** (channel B) for training and evaluating full-duplex spoken dialogue models:
+models that listen and speak at the same time, take turns, backchannel, interrupt and get
+interrupted.
 
-- Dialogue generation: Qwen · Speech synthesis: Kokoro-82M
-- Total: **{t["words"]:,} words** ({t["words_heard_a"]:,} user / {t["words_spoken_b"]:,} assistant),
-  {t["hours"]:.2f} h in {t["conversations"]} conversations
-- Schema version: {manifest["schema_version"]}
-- Config fingerprint: `{manifest["config_fingerprint"]}`
-- Seed: {manifest["seed"]}
-
-## Splits (grouped by scenario family, fixed before synthesis)
-
-| Split | Hours |
+| | |
 |---|---:|
-{hours_split}
+| Words, total | **{words:,}** |
+| Words heard (user, channel A) | {t["words_heard_a"]:,} |
+| Words spoken (assistant, channel B) | {t["words_spoken_b"]:,} |
+| Conversations | {t["conversations"]:,} |
+| Audio | {hours:.1f} h (two channels, {manifest["sample_rate"]} Hz) |
+| Words per conversation (mean) | {words / max(t["conversations"], 1):.0f} |
 
-## Primary skill mix
+## Format
 
-| Skill | Hours | Target share |
+Each row is one conversation:
+
+| Field | Description |
+|---|---|
+| `channel_a` | Audio, user only, 16-bit PCM mono, {manifest["sample_rate"]} Hz |
+| `channel_b` | Audio, assistant only, same length as `channel_a` |
+| `events` | Sample-accurate events: type, speaker, start/end sample, text |
+| `words_a`, `words_b` | Words in each channel's text |
+| `skill`, `scenario`, `topic` | Primary conversational skill and scenario family |
+| `voice_a`, `voice_b` | TTS voices |
+| `metadata_json` | Full per-conversation metadata |
+
+Channels are never mixed: overlapping speech appears at the same sample positions in
+both channels. Outside its own speech a channel is digital silence.
+
+```python
+from datasets import load_dataset
+
+ds = load_dataset("<this repo>", split="train", streaming=True)
+row = next(iter(ds))
+row["channel_a"]["array"], row["channel_b"]["array"], row["events"]
+```
+
+## Splits
+
+Splits are fixed before synthesis and grouped by scenario family (skill x topic), so
+near-duplicate conversations never cross splits.
+
+| Split | Words | Hours |
 |---|---:|---:|
-{hours_skill}
+{split_rows}
 
-## Event types
+## Conversational skills
 
-`normal_turn`, `short_pause`, `long_pause`, `backchannel`, `overlap`, `interruption`,
-`cutoff`, `self_correction`.
+Each conversation is generated around one primary skill; others appear naturally too.
+
+| Skill | Words | Hours | Share | Target |
+|---|---:|---:|---:|---:|
+{skill_rows}
+
+## Full-duplex events
+
+{event_table}
+
+## How it was made
+
+1. **Dialogue**: `{cfg.dialogue.model}` writes each conversation as structured JSON
+   (speaker, text, intent, event, reference to the turn it reacts to). A validator rejects
+   malformed, monologue-like, duplicate or off-skill dialogues; every rejection is logged.
+2. **Speech**: Kokoro-82M. The assistant always uses one voice (`{sc.model_voice}`); the
+   user voice is drawn per conversation from {len(sc.user_voices)} voices, with small
+   speed variation.
+3. **Timeline**: utterances are placed on two channels with natural pauses, overlaps,
+   backchannels inside the other speaker's turn, interruptions that cut the interrupted
+   speaker off, self-cutoffs and self-corrections.
+4. **Quality control**: sample-accurate event checks, speaker isolation, clipping and
+   silence checks on every conversation; only passed conversations are published.
+
+Code: [Manifestro/hohere](https://github.com/Manifestro/hohere).
+
+## Intended use and limitations
+
+- **Use**: pre-training and fine-tuning full-duplex / turn-taking speech models,
+  evaluation of interruption and backchannel handling, voice activity projection.
+- **Synthetic speech**: limited voice diversity, clean studio-like audio, no background
+  noise, TTS prosody. Expect a domain gap to real conversations.
+- **English only**, everyday topics; dialogue style reflects the generating LLM.
+- A cut-off utterance keeps its full source `text`, while its audio stops early.
+
+## License and attribution
+
+**{pub.license.upper()}**, by {pub.attribution}. Please credit "{pub.attribution}, hohere"
+when you use this dataset.
+
+Generated with Qwen3 (Apache-2.0) and Kokoro-82M (Apache-2.0).
 
 ## Provenance
 
-`manifest.json` lists every source file with its SHA-256, software versions and models.
-`generation_config.yaml` holds the full configuration. `splits.json` is the immutable
-split assignment.
+`manifest.json` lists every source file with its SHA-256, software versions and models;
+`generation_config.yaml` holds the full configuration (seed {manifest["seed"]},
+fingerprint `{manifest["config_fingerprint"]}`); `splits.json` is the split assignment.
+Schema version {manifest["schema_version"]}.
 
-All content is synthetic; no real people were recorded.
+## Citation
+
+```bibtex
+@misc{{hohere{manifest["version"].replace(".", "")},
+  title  = {{hohere: synthetic full-duplex spoken dialogues}},
+  author = {{{pub.attribution}}},
+  year   = {{2026}},
+  note   = {{Version {manifest["version"]}}},
+  url    = {{https://github.com/Manifestro/hohere}}
+}}
+```
 """
 
 
