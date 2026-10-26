@@ -39,7 +39,7 @@ from hohere.synthesis import (
 from hohere.timeline.composer import CompositionError, TimelineComposer
 from hohere.validation.audio import validate_audio
 from hohere.validation.dataset import validate_dataset
-from hohere.validation.dialogue import DuplicateIndex, validate_dialogue
+from hohere.validation.dialogue import DuplicateIndex, repair_dialogue, validate_dialogue
 
 log = logging.getLogger("hohere.pipeline")
 T = TypeVar("T")
@@ -148,6 +148,9 @@ class Pipeline:
                 dialogue: Dialogue | None = None
                 try:
                     dialogue = self.generator.generate(spec, attempt=attempt, feedback=feedback)
+                    repairs = repair_dialogue(dialogue, self.cfg)
+                    if repairs:
+                        dialogue.generator["repairs"] = "; ".join(repairs)
                     found = (
                         validate_dialogue(dialogue, self.cfg)
                         if self.cfg.quality.validate_dialogue

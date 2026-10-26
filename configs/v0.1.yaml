@@ -34,7 +34,7 @@ dialogue:
   temperature: 0.9
   top_p: 0.95
   concurrency: 16
-  max_attempts: 3
+  max_attempts: 5
   min_turns: 4
   max_turns: 20
   max_words_per_utterance: 60

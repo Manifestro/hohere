@@ -175,3 +175,27 @@ def test_qwen_generator_parses_response(cfg, monkeypatch):
     assert len(d.turns) == 5 and d.turns[0].event is TurnEvent.NORMAL
     assert fake.calls[0]["response_format"] == {"type": "json_object"}
     assert validate_dialogue(d, cfg) == []
+
+
+def test_long_backchannel_is_repaired_to_normal_turn(cfg):
+    from hohere.validation.dialogue import repair_dialogue
+
+    turns = _base_turns()
+    turns[3] = {
+        "id": "t4",
+        "speaker": "B",
+        "text": "Okay, I can drive if you bring the sandwiches and drinks.",
+        "event": "backchannel",
+        "ref": "t3",
+    }
+    d = _dialogue(turns)
+    assert "backchannel_too_long" in codes(validate_dialogue(d, cfg))
+    repairs = repair_dialogue(d, cfg)
+    assert repairs == ["conv_000001_u004: long backchannel -> normal"]
+    assert d.turns[3].event is TurnEvent.NORMAL and d.turns[3].ref is None
+    assert validate_dialogue(d, cfg) == []
+    # short backchannels are left alone
+    turns.insert(
+        1, {"id": "bc", "speaker": "B", "text": "mm-hm", "event": "backchannel", "ref": "t1"}
+    )
+    assert all("u002" not in r for r in repair_dialogue(_dialogue(turns), cfg))

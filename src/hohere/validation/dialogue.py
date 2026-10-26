@@ -35,6 +35,24 @@ def _main_turns(dialogue: Dialogue):
     return [t for t in dialogue.turns if t.event is not TurnEvent.BACKCHANNEL]
 
 
+def repair_dialogue(dialogue: Dialogue, cfg: HohereConfig) -> list[str]:
+    """Fix unambiguous labelling mistakes in place; returns what was changed.
+
+    A "backchannel" longer than `max_backchannel_words` is a real reply with the wrong
+    label (the generator does this for assistant answers), so it becomes a normal turn.
+    """
+    repairs = []
+    for t in dialogue.turns:
+        if (
+            t.event is TurnEvent.BACKCHANNEL
+            and len(words(t.text)) > cfg.dialogue.max_backchannel_words
+        ):
+            t.event = TurnEvent.NORMAL
+            t.ref = None
+            repairs.append(f"{t.id}: long backchannel -> normal")
+    return repairs
+
+
 def validate_dialogue(dialogue: Dialogue, cfg: HohereConfig) -> list[RejectionReason]:
     dc, tl = cfg.dialogue, cfg.timeline
     reasons: list[RejectionReason] = []

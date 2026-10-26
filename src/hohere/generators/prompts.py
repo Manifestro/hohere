@@ -47,9 +47,10 @@ suggestion|acknowledgement|correction|recall|greeting|closing>",
 
 Event rules:
 - "normal": a regular turn. Use "ref" only if it explicitly recalls an earlier turn.
-- "backchannel": a 1-4 word reaction ("mm-hm", "right", "yeah", "oh wow", "I see")
+- "backchannel": ONLY a 1-4 word reaction ("mm-hm", "right", "yeah", "got it", "I see")
   said WHILE the other speaker is talking. "ref" = the turn it reacts to, which must be
-  by the other speaker and must be a long turn (at least 12 words).
+  by the other speaker and must be a long turn (at least 12 words). Anything longer than
+  four words, including every real answer of the assistant, is a "normal" turn.
 - "overlap": starts just before the other speaker finishes and both complete their
   sentences. "ref" = the immediately preceding turn of the other speaker.
 - "interruption": cuts into the other speaker's turn. "ref" = the immediately preceding
