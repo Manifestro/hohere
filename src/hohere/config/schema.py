@@ -82,7 +82,7 @@ class DatasetConfig(_Strict):
 
 class DialogueConfig(_Strict):
     provider: Literal["qwen", "mock"] = "qwen"
-    model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
     # Falls back to $HOHERE_QWEN_BASE_URL / $HOHERE_QWEN_API_KEY when null.
     base_url: str | None = None
     api_key_env: str = "HOHERE_QWEN_API_KEY"

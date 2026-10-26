@@ -18,7 +18,7 @@ uv sync --all-extras
 # Separate env for the Qwen server so its torch/CUDA pins never clash with Kokoro.
 if [ ! -x /workspace/vllm-env/bin/vllm ]; then
   uv venv /workspace/vllm-env --python 3.12
-  VIRTUAL_ENV=/workspace/vllm-env uv pip install vllm
+  VIRTUAL_ENV=/workspace/vllm-env uv pip install vllm ninja
 fi
 
 echo "done. next: start vLLM (docs/runpod.md), then: uv run hohere pipeline -c configs/smoke.yaml"

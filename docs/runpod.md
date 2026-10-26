@@ -1,58 +1,50 @@
 # Running on RunPod
 
 One GPU pod runs both the Qwen server (vLLM) and Kokoro. Kokoro-82M needs ~1–2 GB of VRAM,
-so give vLLM most of the card and leave a little headroom.
+so vLLM gets 80% of the card.
 
 ## Pod
 
 | Qwen model | GPU | Notes |
 |---|---|---|
-| `Qwen/Qwen3-30B-A3B-Instruct-2507-FP8` | L40S / A6000 48 GB | good default, fast MoE |
-| `Qwen/Qwen3-30B-A3B-Instruct-2507` (BF16) | A100 / H100 80 GB | |
+| `Qwen/Qwen3-30B-A3B-Instruct-2507-FP8` | L40S / A6000 48 GB | default, fast MoE |
+| `Qwen/Qwen3-30B-A3B-Instruct-2507` (BF16) | A100 / H100 80 GB | set `dialogue.model` to match |
 
-Use a PyTorch/CUDA template, and put the project and caches on the network volume
-(`/workspace`) so they survive pod restarts.
+Image `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404`, SSH enabled, `/workspace` volume
+of ~150 GB. Pass `HF_TOKEN` and a GitHub token as RunPod secrets
+(`{{ RUNPOD_SECRET_HF_TOKEN }}`), never in files.
 
-## Setup
+A stopped pod's disk is pinned to its host; if that host's GPU is taken, the pod cannot
+start. A network volume avoids this: any pod in the same data center can mount it.
+
+## One command to "ready"
 
 ```bash
 cd /workspace
-git clone https://github.com/Manifestro/hohere.git && cd hohere
-bash scripts/runpod_setup.sh          # apt espeak-ng, uv, project env, separate vLLM env
+git clone https://github.com/Manifestro/hohere.git && cd hohere   # first time only
+bash scripts/pod_up.sh
+source /workspace/hohere.env
 ```
 
-## Start Qwen (separate venv, so vLLM's torch never conflicts with Kokoro's)
-
-```bash
-source /workspace/vllm-env/bin/activate
-vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507-FP8 \
-  --port 8000 --max-model-len 16384 --gpu-memory-utilization 0.80 \
-  > /workspace/vllm.log 2>&1 &
-deactivate
-curl -s localhost:8000/v1/models   # wait until it answers
-```
-
-Set `dialogue.model` in the config to the exact model name you served.
+`pod_up.sh` is idempotent: it installs `espeak-ng` and uv if missing, syncs the project env,
+creates a separate vLLM env (so vLLM's torch never clashes with Kokoro's), starts
+`vllm serve` and waits for the healthcheck. Venvs, model weights and all compile caches
+(torch.compile, FlashInfer JIT, CUDA graphs) live on `/workspace`, so the second start
+skips installs and compilation. Override with `HOHERE_QWEN_MODEL`, `HOHERE_QWEN_PORT`,
+`HOHERE_VLLM_GPU_UTIL`, `HOHERE_VLLM_MAX_LEN`.
 
 ## Generate
 
 ```bash
-export HOHERE_QWEN_BASE_URL=http://localhost:8000/v1
-export HF_HOME=/workspace/hf-cache
-uv run hohere pipeline --config configs/smoke.yaml        # ~15 min of audio, sanity check
-uv run hohere status   --config configs/smoke.yaml
+uv run hohere pipeline --config configs/smoke.yaml     # ~15 min of audio, sanity check
+uv run hohere pipeline --config configs/stage1.yaml    # Stage 1: 30 min deliverable
+uv run hohere status   --config configs/stage1.yaml
 ```
 
-Then the real run, inside `tmux` so it survives disconnects:
+Long runs go inside `tmux`. If the pod restarts, run `pod_up.sh` and the same command
+again: every stage resumes.
 
-```bash
-tmux new -s hohere
-uv run hohere pipeline --config configs/production.yaml
-```
-
-If the pod restarts, just run the same command again — every stage resumes.
-
-## Opt-in integration tests on the pod
+## Opt-in integration tests
 
 ```bash
 HOHERE_RUN_EXTERNAL=1 uv run pytest -m external
@@ -62,7 +54,5 @@ HOHERE_RUN_EXTERNAL=1 uv run pytest -m external
 
 ```bash
 uv run hohere export  --config configs/production.yaml --out /workspace/exports/v0.1.0
-HF_TOKEN=... uv run hohere publish --repo-id <namespace>/hohere --export-dir /workspace/exports/v0.1.0 --tag v0.1.0
+uv run hohere publish --repo-id <namespace>/hohere --export-dir /workspace/exports/v0.1.0 --tag v0.1.0
 ```
-
-Never put the token in a config file or the repository.
