@@ -179,10 +179,11 @@ def synthesize(
 
 
 def _synthesize_workers(config: Path, dataset: Path | None, workers: int, verbose: bool) -> None:
-    """Warm the user-voice cache in one process, then run `workers` shards in parallel.
+    """Run `workers` shard processes in parallel.
 
-    Each stage is a separate process so GPU memory is released between them: the shard
-    workers find every user turn cached and only load the model-voice TTS.
+    With a separate model-voice TTS (e.g. Chatterbox) the user voices are cached first in
+    one process, so the shard workers only load the model-voice TTS and fit a small GPU.
+    When one TTS serves both speakers that pre-pass would only serialize work: skipped.
     """
     import subprocess
 
@@ -191,10 +192,11 @@ def _synthesize_workers(config: Path, dataset: Path | None, workers: int, verbos
         base += ["--dataset", str(dataset)]
     if verbose:
         base.append("--verbose")
-    console.print("[bold]warming user-voice cache (speaker A)[/]")
-    if subprocess.run([*base, "--warm", "A"]).returncode != 0:
-        console.print("[red]warm-up failed[/]")
-        raise typer.Exit(1)
+    if load_config(config).speech.model_provider != "same":
+        console.print("[bold]warming user-voice cache (speaker A)[/]")
+        if subprocess.run([*base, "--warm", "A"]).returncode != 0:
+            console.print("[red]warm-up failed[/]")
+            raise typer.Exit(1)
     console.print(f"[bold]starting {workers} synthesis workers[/]")
     import os
 
