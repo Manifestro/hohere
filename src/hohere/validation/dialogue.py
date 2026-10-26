@@ -64,6 +64,32 @@ def validate_dialogue(dialogue: Dialogue, cfg: HohereConfig) -> list[RejectionRe
     if not dc.min_turns <= len(main) <= dc.max_turns:
         bad("turn_count", f"{len(main)} main turns, allowed [{dc.min_turns}, {dc.max_turns}]")
 
+    main_words = {s: sum(len(words(t.text)) for t in main if t.speaker == s) for s in ("A", "B")}
+    total_words = sum(main_words.values())
+    for s in ("A", "B"):
+        n_turns = sum(t.speaker == s for t in main)
+        if n_turns < dc.min_main_turns_per_speaker:
+            bad(
+                "speaker_imbalance",
+                f"speaker {s} has {n_turns} main turns < {dc.min_main_turns_per_speaker}",
+            )
+        share = main_words[s] / total_words if total_words else 0.0
+        if share < dc.min_speaker_word_share:
+            bad(
+                "speaker_imbalance",
+                f"speaker {s} has {share:.0%} of words < {dc.min_speaker_word_share:.0%}",
+            )
+    run = 0
+    for prev, cur in zip([None, *main], main, strict=False):
+        run = run + 1 if prev is not None and prev.speaker == cur.speaker else 1
+        if run > dc.max_consecutive_main_turns:
+            bad(
+                "monologue_run",
+                f"{run} main turns in a row by {cur.speaker} > {dc.max_consecutive_main_turns}",
+                cur.id,
+            )
+            break
+
     index = {t.id: i for i, t in enumerate(turns)}
     by_id = dialogue.turn_map()
     seen_text: dict[str, str] = {}

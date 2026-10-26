@@ -50,8 +50,11 @@ Event rules:
 General rules:
 - Exactly two speakers, A and B. The first turn is "normal" by A.
 - Turn ids are t1, t2, t3, ... in order. "ref" must point to an earlier id.
-- Backchannels do not take the floor: after a backchannel, the next normal turn usually
-  continues from the speaker who was talking.
+- Backchannels do not take the floor and never replace a real reply: they are extra
+  reactions placed inside the other speaker's long turn.
+- This is a DIALOGUE, not a monologue: BOTH speakers hold the floor with real "normal"
+  turns (questions, opinions, stories, answers). Each speaker has at least a fifth of the
+  spoken words, and neither speaker has more than three normal turns in a row.
 - Keep each utterance under {max_words} words. Vary sentence length.
 - The conversation must be coherent, on-topic, and end naturally.
 """
@@ -75,9 +78,11 @@ waiting for an answer. Mark at least two turns with "pause": "long" and several 
 "short". Use fillers and hesitant starts where a person is thinking.""",
     Skill.BACKCHANNEL: """\
 Primary skill: BACKCHANNELS.
-One speaker tells something at length in several long turns (15-40 words each) while
-the listener reacts with short backchannels during their speech. Include at least
-three "backchannel" turns, each with "ref" pointing to a long turn of the other speaker.""",
+Both speakers take turns telling things at length (15-40 words per long turn), asking
+each other questions and replying properly. While one speaks, the other reacts with short
+backchannels during their speech, and the roles swap: BOTH speakers produce backchannels
+and BOTH have long turns of their own. Include at least three "backchannel" turns, each
+with "ref" pointing to a long turn of the other speaker.""",
     Skill.INTERRUPTION: """\
 Primary skill: INTERRUPTIONS.
 Include at least two "interruption" turns: a speaker stops the other's answer to

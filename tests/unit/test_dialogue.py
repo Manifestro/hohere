@@ -106,6 +106,27 @@ def test_skill_requirement(cfg):
     assert "skill_requirement" in c
 
 
+def test_monologue_with_backchannels_rejected(cfg):
+    # Speaker A holds the floor the whole time; B only says "mm-hm".
+    turns = []
+    for i in range(5):
+        turns.append({"id": f"a{i}", "speaker": "A", "text": f"{LONG} and then part {i}"})
+        turns.append(
+            {"id": f"b{i}", "speaker": "B", "text": "mm-hm", "event": "backchannel", "ref": f"a{i}"}
+        )
+    c = codes(validate_dialogue(_dialogue(turns, Skill.BACKCHANNEL), cfg))
+    assert {"speaker_imbalance", "monologue_run"} <= c
+
+
+def test_balance_thresholds_are_configurable(cfg):
+    turns = _base_turns()
+    turns[1]["text"] = "Which lake?"
+    turns[3]["text"] = "Sure."
+    assert "speaker_imbalance" in codes(validate_dialogue(_dialogue(turns), cfg))
+    cfg.dialogue.min_speaker_word_share = 0.0
+    assert "speaker_imbalance" not in codes(validate_dialogue(_dialogue(turns), cfg))
+
+
 def test_markup_and_length(cfg):
     turns = _base_turns()
     turns[1]["text"] = "*laughs* " + " ".join(["word"] * 80)

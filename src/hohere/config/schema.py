@@ -97,6 +97,10 @@ class DialogueConfig(_Strict):
     min_words_per_utterance: int = 1
     max_words_per_utterance: int = 60
     max_backchannel_words: int = 4
+    # Speaker balance: a dialogue, not a monologue with backchannels.
+    min_main_turns_per_speaker: int = Field(default=2, ge=1)
+    min_speaker_word_share: float = Field(default=0.2, ge=0.0, le=0.5)
+    max_consecutive_main_turns: int = Field(default=3, ge=1)
     words_per_second: float = 2.6  # for duration estimates before synthesis
     min_duration_seconds: float = 20.0
     max_duration_seconds: float = 180.0
