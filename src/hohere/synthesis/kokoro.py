@@ -31,7 +31,7 @@ class KokoroSynthesizer:
         self._pipelines: dict[str, object] = {}
         self._model_obj = None
         self._lock = threading.Lock()
-        for v in cfg.voices:
+        for v in cfg.all_voices:
             if v[:1] not in _LANG_CODES:
                 raise SynthesisError(f"voice {v!r} is not an English Kokoro voice")
 

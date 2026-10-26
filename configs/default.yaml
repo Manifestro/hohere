@@ -47,9 +47,13 @@ speech:
   model: hexgrad/Kokoro-82M
   sample_rate: 24000
   device: null              # auto: cuda if available
-  voices: [af_heart, af_bella, af_nicole, af_aoede, af_kore, af_sarah,
-           am_michael, am_fenrir, am_puck, am_echo, am_eric, am_liam,
-           bf_emma, bf_isabella, bm_george, bm_fable, bm_lewis]
+  # Speaker B = AI assistant (the model): always this voice and speed.
+  model_voice: af_heart
+  model_speed: 1.0
+  # Speaker A = human user: one of these per conversation (never the model voice).
+  user_voices: [af_bella, af_nicole, af_aoede, af_kore, af_sarah, af_alloy, af_nova,
+                am_michael, am_fenrir, am_puck, am_echo, am_eric, am_liam, am_onyx,
+                bf_emma, bf_isabella, bf_alice, bm_george, bm_fable, bm_lewis, bm_daniel]
   speed_min: 0.95
   speed_max: 1.05
   utterance_speed_jitter: 0.02

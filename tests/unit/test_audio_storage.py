@@ -82,12 +82,31 @@ def test_trim_silence_keeps_padding():
     assert trim_silence(np.zeros(SR, np.float32), SR, -45, 20).size == 0
 
 
-def test_voice_assignment_stable_and_distinct(cfg, mock_dialogue_factory):
+def test_model_voice_fixed_user_voice_varies(cfg, mock_dialogue_factory):
     d = mock_dialogue_factory()
     v1, v2 = assign_voices(d, cfg.speech), assign_voices(d, cfg.speech)
     assert v1 == v2
-    assert v1.voices["A"] != v1.voices["B"]
-    assert all(cfg.speech.speed_min <= s <= cfg.speech.speed_max for s in v1.speeds.values())
+    assignments = [assign_voices(mock_dialogue_factory(seed=s), cfg.speech) for s in range(40)]
+    assert {a.voices["B"] for a in assignments} == {"af_heart"}
+    assert {a.speeds["B"] for a in assignments} == {cfg.speech.model_speed}
+    user_voices = {a.voices["A"] for a in assignments}
+    assert "af_heart" not in user_voices and len(user_voices) > 5
+    assert all(cfg.speech.speed_min <= a.speeds["A"] <= cfg.speech.speed_max for a in assignments)
+
+
+def test_model_voice_never_in_user_pool():
+    from pydantic import ValidationError
+
+    from hohere.config.schema import HohereConfig
+
+    with pytest.raises(ValidationError):
+        HohereConfig.model_validate({"speech": {"user_voices": ["af_heart", "am_eric"]}})
+
+
+def test_model_utterances_have_constant_speed(cfg, synth_runner, mock_dialogue_factory):
+    _, segments = synth_runner.synthesize_dialogue(mock_dialogue_factory(turns=10))
+    assert {s.speed for s in segments if s.speaker == "B"} == {cfg.speech.model_speed}
+    assert {s.voice for s in segments if s.speaker == "B"} == {"af_heart"}
 
 
 def test_split_manifest_is_immutable(tmp_path, plan):

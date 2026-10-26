@@ -59,14 +59,15 @@ class VoiceAssignment:
 
 
 def assign_voices(dialogue: Dialogue, cfg: SpeechConfig) -> VoiceAssignment:
-    """Deterministic, stable speaker -> voice/speed mapping for one conversation."""
+    """Speaker B (the AI assistant) always gets the fixed model voice and speed;
+    speaker A (the user) gets a deterministic per-conversation voice and speed."""
     rng = np.random.default_rng(derive_seed(dialogue.seed, "voices"))
-    pool = sorted(set(cfg.voices))
-    a, b = rng.choice(len(pool), size=2, replace=False)
-    speeds = rng.uniform(cfg.speed_min, cfg.speed_max, size=2)
+    pool = sorted(set(cfg.user_voices))
+    user_voice = pool[int(rng.integers(len(pool)))]
+    user_speed = round(float(rng.uniform(cfg.speed_min, cfg.speed_max)), 3)
     return VoiceAssignment(
-        voices={"A": pool[int(a)], "B": pool[int(b)]},
-        speeds={"A": round(float(speeds[0]), 3), "B": round(float(speeds[1]), 3)},
+        voices={"A": user_voice, "B": cfg.model_voice},
+        speeds={"A": user_speed, "B": cfg.model_speed},
     )
 
 
@@ -82,9 +83,9 @@ class SynthesisRunner:
         self.cache_hits = 0
         self.cache_misses = 0
 
-    def _utterance_speed(self, base: float, utterance_id: str, seed: int) -> float:
+    def _utterance_speed(self, speaker: str, base: float, utterance_id: str, seed: int) -> float:
         jitter = self.cfg.utterance_speed_jitter
-        if jitter <= 0:
+        if jitter <= 0 or speaker == "B":
             return base
         rng = np.random.default_rng(derive_seed(seed, "speed", utterance_id))
         return round(float(base * (1 + rng.uniform(-jitter, jitter))), 3)
@@ -111,7 +112,9 @@ class SynthesisRunner:
         segments: list[Segment] = []
         for turn in dialogue.turns:
             voice = assignment.voices[turn.speaker]
-            speed = self._utterance_speed(assignment.speeds[turn.speaker], turn.id, dialogue.seed)
+            speed = self._utterance_speed(
+                turn.speaker, assignment.speeds[turn.speaker], turn.id, dialogue.seed
+            )
             key = cache_key(self.tts.name, self.tts.model, voice, speed, turn.text)
             raw = self.cache.get(key)
             if raw is None:

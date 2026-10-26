@@ -116,10 +116,13 @@ class DialogueConfig(_Strict):
         return self
 
 
-DEFAULT_VOICES = [
-    "af_heart", "af_bella", "af_nicole", "af_aoede", "af_kore", "af_sarah",
-    "am_michael", "am_fenrir", "am_puck", "am_echo", "am_eric", "am_liam",
-    "bf_emma", "bf_isabella", "bm_george", "bm_fable", "bm_lewis",
+# Speaker B is the AI assistant (the model being trained): one fixed voice, always.
+MODEL_VOICE = "af_heart"
+# Speaker A is the human user: a different voice per conversation.
+DEFAULT_USER_VOICES = [
+    "af_bella", "af_nicole", "af_aoede", "af_kore", "af_sarah", "af_alloy", "af_nova",
+    "am_michael", "am_fenrir", "am_puck", "am_echo", "am_eric", "am_liam", "am_onyx",
+    "bf_emma", "bf_isabella", "bf_alice", "bm_george", "bm_fable", "bm_lewis", "bm_daniel",
 ]  # fmt: skip
 
 
@@ -128,10 +131,14 @@ class SpeechConfig(_Strict):
     model: str = "hexgrad/Kokoro-82M"
     sample_rate: Literal[24000] = 24000
     device: str | None = None  # "cuda", "cpu", "mps"; null = auto
-    voices: list[str] = Field(default_factory=lambda: list(DEFAULT_VOICES))
+    # Speaker B (AI assistant): fixed voice and speed in every conversation.
+    model_voice: str = MODEL_VOICE
+    model_speed: float = Field(default=1.0, gt=0)
+    # Speaker A (human user): voice drawn per conversation, speed in [speed_min, speed_max].
+    user_voices: list[str] = Field(default_factory=lambda: list(DEFAULT_USER_VOICES))
     speed_min: float = 0.95
     speed_max: float = 1.05
-    # Small extra per-utterance speed variation around the speaker's base speed.
+    # Small extra per-utterance speed variation for the user (the model voice never varies).
     utterance_speed_jitter: float = 0.02
     trim_silence: bool = True
     trim_threshold_db: float = -45.0
@@ -139,18 +146,19 @@ class SpeechConfig(_Strict):
     max_retries: int = 3
     batch_size: int = 16
 
-    @field_validator("voices")
-    @classmethod
-    def _two_voices(cls, v: list[str]) -> list[str]:
-        if len(set(v)) < 2:
-            raise ValueError("need at least two distinct voices")
-        return v
-
     @model_validator(mode="after")
-    def _check_speed(self) -> SpeechConfig:
+    def _check_voices(self) -> SpeechConfig:
         if not 0 < self.speed_min <= self.speed_max:
             raise ValueError("require 0 < speed_min <= speed_max")
+        if not self.user_voices:
+            raise ValueError("user_voices must not be empty")
+        if self.model_voice in self.user_voices:
+            raise ValueError(f"model_voice {self.model_voice!r} must not be in user_voices")
         return self
+
+    @property
+    def all_voices(self) -> list[str]:
+        return [self.model_voice, *self.user_voices]
 
 
 class TimelineConfig(_Strict):

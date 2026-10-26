@@ -24,6 +24,8 @@ dependencies = [
 kokoro = [
     "kokoro>=0.9.4",
     "misaki[en]>=0.9.4",
+    # misaki downloads this at runtime otherwise, and `uv sync` would then remove it.
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
 ]
 # Hugging Face export and publishing.
 hf = [

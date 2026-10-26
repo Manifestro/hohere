@@ -82,7 +82,7 @@ class MockGenerator:
 
         raw = {
             "objective": f"discuss {spec.topic}",
-            "roles": {"A": "friend", "B": "friend"},
+            "roles": {"A": "user", "B": "AI voice assistant"},
             "turns": turns,
         }
         info = {"provider": "mock", "model": "mock-v1", "attempt": str(attempt)}
