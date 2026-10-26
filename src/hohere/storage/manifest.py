@@ -39,6 +39,7 @@ def software_versions() -> dict[str, str]:
 def build_manifest(store: DatasetStore, cfg: HohereConfig, include_failed: bool = False) -> dict:
     conversations = []
     hours_by_split: dict[str, float] = defaultdict(float)
+    words_a = words_b = 0
     hours_by_skill: dict[str, float] = defaultdict(float)
     models: Counter[str] = Counter()
     for cid in store.conversation_ids():
@@ -62,6 +63,8 @@ def build_manifest(store: DatasetStore, cfg: HohereConfig, include_failed: bool 
             }
         )
         hours_by_split[meta.split] += meta.duration_seconds / 3600
+        words_a += meta.words_a or 0
+        words_b += meta.words_b or 0
         hours_by_skill[meta.skill.value] += meta.duration_seconds / 3600
         models[f"dialogue:{meta.generator.get('dialogue_model', '?')}"] += 1
         models[f"speech:{meta.generator.get('speech_model', '?')}"] += 1
@@ -82,6 +85,9 @@ def build_manifest(store: DatasetStore, cfg: HohereConfig, include_failed: bool 
         "totals": {
             "conversations": len(conversations),
             "hours": round(total_hours, 4),
+            "words": words_a + words_b,
+            "words_heard_a": words_a,
+            "words_spoken_b": words_b,
             "hours_by_split": {k: round(v, 4) for k, v in sorted(hours_by_split.items())},
             "hours_by_skill": {k: round(v, 4) for k, v in sorted(hours_by_skill.items())},
             "target_hours": cfg.dataset.target_hours,

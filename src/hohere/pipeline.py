@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
+import numpy as np
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -24,7 +25,7 @@ from rich.progress import (
 
 from hohere.config.schema import HohereConfig
 from hohere.generators import DialogueGenerationError, DialogueGenerator, make_generator
-from hohere.planning import build_plan, plan_summary, split_manifest
+from hohere.planning import build_plan, derive_seed, plan_summary, split_manifest
 from hohere.schemas.dataset import ConversationMetadata, EventsFile
 from hohere.schemas.dialogue import ConversationSpec, Dialogue, Rejection, RejectionReason
 from hohere.storage.local import DatasetStore, pcm16_to_float, read_json, to_pcm16, write_json
@@ -39,7 +40,12 @@ from hohere.synthesis import (
 from hohere.timeline.composer import CompositionError, TimelineComposer
 from hohere.validation.audio import validate_audio
 from hohere.validation.dataset import validate_dataset
-from hohere.validation.dialogue import DuplicateIndex, repair_dialogue, validate_dialogue
+from hohere.validation.dialogue import (
+    DuplicateIndex,
+    dialogue_words,
+    repair_dialogue,
+    validate_dialogue,
+)
 
 log = logging.getLogger("hohere.pipeline")
 T = TypeVar("T")
@@ -130,13 +136,28 @@ class Pipeline:
             if not self.store.has_dialogue(s.conversation_id)
             and not self.store.dialogue_exhausted(s.conversation_id, dc.max_attempts)
         ]
+        target_words = self.cfg.dataset.target_words
+        accepted_words = [0]
+        if target_words is not None:
+            # Interleave skills so that stopping at the word target keeps the skill mix.
+            rng = np.random.default_rng(derive_seed(self.cfg.project.seed, "generation-order"))
+            todo = [todo[i] for i in rng.permutation(len(todo))]
+            accepted_words[0] = sum(
+                sum(dialogue_words(self.store.load_dialogue(c)).values())
+                for c in self.store.accepted_dialogue_ids()
+            )
         if limit is not None:
             todo = todo[:limit]
         lock = threading.Lock()
         counts: Counter[str] = Counter(skipped=len(specs) - len(todo))
         reasons: Counter[str] = Counter()
 
+        def target_reached() -> bool:
+            return target_words is not None and accepted_words[0] >= target_words
+
         def work(spec: ConversationSpec) -> str:
+            if target_reached():
+                return "skipped_target_reached"
             cid = spec.conversation_id
             path = self.store.dialogue_rejection_path(cid)
             history = (
@@ -167,8 +188,11 @@ class Pipeline:
                     with lock:
                         dup = dup_index.check(dialogue)
                         if dup is None:
+                            if target_reached():
+                                return "skipped_target_reached"
                             dup_index.add(dialogue)
                             self.store.save_dialogue(dialogue)
+                            accepted_words[0] += sum(dialogue_words(dialogue).values())
                             if history:
                                 self.store.save_dialogue_rejections(cid, history)
                             return "accepted"
@@ -198,7 +222,11 @@ class Pipeline:
                 except Exception:
                     log.exception("unexpected generation failure")
                     counts["error"] += 1
-        return self._report("generate", started, dict(counts), {"rejection_reasons": dict(reasons)})
+        extra = {"rejection_reasons": dict(reasons)}
+        if target_words is not None:
+            extra |= {"target_words": target_words, "accepted_words": accepted_words[0]}
+            counts["accepted_words"] = accepted_words[0]
+        return self._report("generate", started, dict(counts), extra)
 
     # -- synthesize --------------------------------------------------------------
 
@@ -326,6 +354,8 @@ class Pipeline:
                 },
                 split=dialogue.split,
                 quality_status=status,
+                words_a=dialogue_words(dialogue)["A"],
+                words_b=dialogue_words(dialogue)["B"],
                 config_fingerprint=self.cfg.fingerprint(),
             )
             self.store.save_conversation(

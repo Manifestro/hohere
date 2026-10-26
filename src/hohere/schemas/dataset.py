@@ -79,3 +79,6 @@ class ConversationMetadata(BaseModel):
     split: Literal["train", "validation", "test"]
     quality_status: Literal["passed", "failed", "pending"] = "pending"
     config_fingerprint: str | None = None
+    # Words in each channel's text: A = what the model hears, B = what it says.
+    words_a: int | None = None
+    words_b: int | None = None

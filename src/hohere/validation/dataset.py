@@ -75,6 +75,8 @@ def validate_dataset(
     results: dict[str, dict] = {}
     seen_ids: Counter[str] = Counter()
     hours: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    words: Counter[str] = Counter()
+    words_by_split: Counter[str] = Counter()
     event_counts: Counter[str] = Counter()
     reason_counts: Counter[str] = Counter()
 
@@ -95,6 +97,9 @@ def validate_dataset(
         if meta is not None:
             if status == "passed":
                 hours[meta.split][meta.skill.value] += meta.duration_seconds / 3600
+                words["A"] += meta.words_a or 0
+                words["B"] += meta.words_b or 0
+                words_by_split[meta.split] += (meta.words_a or 0) + (meta.words_b or 0)
             if update_status and meta.quality_status != status:
                 meta.quality_status = status
                 q_path = store.conversation_dir(cid) / "quality.json"
@@ -135,6 +140,11 @@ def validate_dataset(
             "passed": sum(r["status"] == "passed" for r in results.values()),
             "failed": sum(r["status"] == "failed" for r in results.values()),
             "passed_hours": round(total_hours, 4),
+            "passed_words": words["A"] + words["B"],
+            "words_heard_a": words["A"],
+            "words_spoken_b": words["B"],
+            "target_words": cfg.dataset.target_words,
+            "words_by_split": dict(sorted(words_by_split.items())),
             "target_hours": cfg.dataset.target_hours,
             "hours_by_split": {s: round(sum(v.values()), 4) for s, v in sorted(hours.items())},
             "skill_distribution": distribution,

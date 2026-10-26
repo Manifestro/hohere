@@ -25,12 +25,16 @@ class ProjectConfig(_Strict):
 
 
 class SkillMixEntry(_Strict):
-    """Share of total hours for dialogues whose *primary* skill is this one."""
+    """Share of the dataset target (words, or hours) for dialogues whose *primary* skill is
+    this one."""
 
     share: float = Field(ge=0.0, le=1.0)
     description: str = ""
     # Typical composed length for this skill; falls back to estimated_conversation_seconds.
     estimated_seconds: float | None = Field(default=None, gt=0)
+    # Typical words per conversation (both speakers); falls back to
+    # estimated_conversation_words.
+    estimated_words: float | None = Field(default=None, gt=0)
 
 
 def _default_skill_mix() -> dict[Skill, SkillMixEntry]:
@@ -58,6 +62,9 @@ def _default_skill_mix() -> dict[Skill, SkillMixEntry]:
 
 class DatasetConfig(_Strict):
     target_hours: float = Field(default=20.0, gt=0)
+    # When set, the dataset is sized by words (both speakers) instead of hours, and
+    # generation stops once accepted dialogues reach it.
+    target_words: int | None = Field(default=None, gt=0)
     language: Literal["en"] = "en"
     output_dir: Path = Path("./data/output")
     cache_dir: Path = Path("./data/cache")
@@ -66,6 +73,7 @@ class DatasetConfig(_Strict):
     test_ratio: float = 0.1
     # Used to turn hours into a conversation count when planning.
     estimated_conversation_seconds: float = Field(default=60.0, gt=0)
+    estimated_conversation_words: float = Field(default=170.0, gt=0)
     # Planned conversations = needed * overprovision, to absorb rejections.
     overprovision: float = Field(default=1.15, ge=1.0)
     skill_mix: dict[Skill, SkillMixEntry] = Field(default_factory=_default_skill_mix)

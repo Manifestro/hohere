@@ -53,6 +53,8 @@ def _features():
             "channel_b": Audio(sampling_rate=24000),
             "duration_samples": Value("int64"),
             "duration_seconds": Value("float64"),
+            "words_a": Value("int64"),
+            "words_b": Value("int64"),
             "sample_rate": Value("int32"),
             "language": Value("string"),
             "skill": Value("string"),
@@ -82,6 +84,8 @@ def _row(store: DatasetStore, cid: str, include_text: bool) -> dict:
         "channel_b": {"bytes": (d / "channel_b.wav").read_bytes(), "path": f"{cid}_b.wav"},
         "duration_samples": meta.duration_samples,
         "duration_seconds": meta.duration_seconds,
+        "words_a": meta.words_a,
+        "words_b": meta.words_b,
         "sample_rate": meta.sample_rate,
         "language": meta.language,
         "skill": meta.skill.value,
@@ -200,7 +204,8 @@ sample positions in both channels, never mixed. `events` gives sample-accurate
 annotations (`start_sample`/`end_sample`, inclusive/exclusive).
 
 - Dialogue generation: Qwen · Speech synthesis: Kokoro-82M
-- Total: **{t["hours"]:.2f} h** in {t["conversations"]} conversations
+- Total: **{t["words"]:,} words** ({t["words_heard_a"]:,} user / {t["words_spoken_b"]:,} assistant),
+  {t["hours"]:.2f} h in {t["conversations"]} conversations
 - Schema version: {manifest["schema_version"]}
 - Config fingerprint: `{manifest["config_fingerprint"]}`
 - Seed: {manifest["seed"]}

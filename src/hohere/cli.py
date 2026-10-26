@@ -378,16 +378,24 @@ def status(config: ConfigOpt = Path("configs/default.yaml"), dataset: DatasetOpt
     accepted = store.accepted_dialogue_ids()
     convs = store.conversation_ids()
     passed = [c for c in convs if store.load_metadata(c).quality_status == "passed"]
-    hours = sum(store.load_metadata(c).duration_seconds for c in passed) / 3600
+    metas = [store.load_metadata(c) for c in passed]
+    hours = sum(m.duration_seconds for m in metas) / 3600
+    from hohere.validation.dialogue import dialogue_words
+
+    text_words = sum(sum(dialogue_words(store.load_dialogue(c)).values()) for c in accepted)
+    passed_words = sum((m.words_a or 0) + (m.words_b or 0) for m in metas)
+    target = cfg.dataset.target_words
     _print_counts(
         "status",
         {
             "planned": planned,
             "dialogues accepted": len(accepted),
+            "accepted words": f"{text_words:,}" + (f" / {target:,}" if target else ""),
             "synthesized": sum(store.has_segments(c) for c in accepted),
             "composed": len(convs),
             "passed": len(passed),
-            "passed hours": f"{hours:.2f} / {cfg.dataset.target_hours}",
+            "passed words": f"{passed_words:,}",
+            "passed hours": f"{hours:.2f}" + ("" if target else f" / {cfg.dataset.target_hours}"),
             "rejections": len(store.all_rejections()),
         },
     )

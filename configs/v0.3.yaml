@@ -1,6 +1,5 @@
-# hohere-dataset v0.3: 10 hours. Assistant (B) = cloned voice via Chatterbox-Turbo.
-# Text is generated on a GPU server (`hohere generate` + `hohere dialogues push`);
-# audio at home (`hohere dialogues pull` + `hohere synthesize --workers 3` + compose ...).
+# hohere-dataset v0.3: 100,000 words (both speakers), sized by words instead of hours.
+# User (A, varied Kokoro voices) <-> AI assistant (B, Kokoro af_heart).
 # hohere default configuration. Every field is validated by hohere.config.schema.
 # Omitted fields use schema defaults (see `uv run hohere init /tmp/full.yaml` for all of them).
 
@@ -10,7 +9,8 @@ project:
   dataset_version: 0.3.0
 
 dataset:
-  target_hours: 10
+  target_hours: 20   # ignored when target_words is set
+  target_words: 100000
   language: en
   output_dir: ./data/v0.3
   cache_dir: ./data/cache
@@ -18,16 +18,16 @@ dataset:
   validation_ratio: 0.1
   test_ratio: 0.1
   estimated_conversation_seconds: 60
-  overprovision: 1.15
+  overprovision: 1.3
   # Primary conversational skill of each dialogue -> share of total hours.
-  # estimated_seconds: mean composed length per skill, measured on v0.1.
+  # estimated_seconds / estimated_words: per-skill means (seconds from v0.1, words ~2.2/s).
   skill_mix:
-    simple_dialogue:     {share: 0.40, estimated_seconds: 70, description: "Questions, answers, clarifications, short exchanges."}
-    context_memory:      {share: 0.20, estimated_seconds: 105, description: "Referring back to things said several turns earlier."}
-    turn_taking:         {share: 0.15, estimated_seconds: 85, description: "Varied pauses, hesitation, waiting for a reply."}
-    backchannel:         {share: 0.10, estimated_seconds: 90, description: "'mm-hm', 'right', 'I see' during the other's speech."}
-    interruption:        {share: 0.10, estimated_seconds: 100, description: "Stopping an answer, clarifying, changing direction."}
-    incomplete_thoughts: {share: 0.05, estimated_seconds: 75, description: "Self-correction, resuming an abandoned sentence."}
+    simple_dialogue:     {share: 0.40, estimated_seconds: 70, estimated_words: 155, description: "Questions, answers, clarifications, short exchanges."}
+    context_memory:      {share: 0.20, estimated_seconds: 105, estimated_words: 230, description: "Referring back to things said several turns earlier."}
+    turn_taking:         {share: 0.15, estimated_seconds: 85, estimated_words: 185, description: "Varied pauses, hesitation, waiting for a reply."}
+    backchannel:         {share: 0.10, estimated_seconds: 90, estimated_words: 200, description: "'mm-hm', 'right', 'I see' during the other's speech."}
+    interruption:        {share: 0.10, estimated_seconds: 100, estimated_words: 220, description: "Stopping an answer, clarifying, changing direction."}
+    incomplete_thoughts: {share: 0.05, estimated_seconds: 75, estimated_words: 165, description: "Self-correction, resuming an abandoned sentence."}
   # topics: [...]   # defaults to hohere/config/topics.py
 
 dialogue:
@@ -51,11 +51,8 @@ speech:
   model: hexgrad/Kokoro-82M
   sample_rate: 24000
   device: null              # auto: cuda if available
-  # Speaker B = AI assistant (the model): one cloned voice, always. The reference audio is
-  # private (data/ is git-ignored): copy it to every synthesis machine by hand.
-  model_voice: manifestro_assistant
-  model_provider: chatterbox_turbo
-  model_reference_audio: ./data/voices/assistant_ref.ogg
+  # Speaker B = AI assistant (the model): always this voice and speed.
+  model_voice: af_heart
   model_speed: 1.0
   # Speaker A = human user: one of these per conversation (never the model voice).
   user_voices: [af_bella, af_nicole, af_aoede, af_kore, af_sarah, af_alloy, af_nova,

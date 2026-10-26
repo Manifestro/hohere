@@ -44,9 +44,13 @@ def conversations_per_skill(cfg: HohereConfig) -> dict[Skill, int]:
     ds = cfg.dataset
     out: dict[Skill, int] = {}
     for skill, entry in ds.skill_mix.items():
-        seconds = ds.target_hours * 3600 * entry.share
-        per_conversation = entry.estimated_seconds or ds.estimated_conversation_seconds
-        out[skill] = math.ceil(seconds / per_conversation * ds.overprovision)
+        if ds.target_words is not None:
+            amount = ds.target_words * entry.share
+            per_conversation = entry.estimated_words or ds.estimated_conversation_words
+        else:
+            amount = ds.target_hours * 3600 * entry.share
+            per_conversation = entry.estimated_seconds or ds.estimated_conversation_seconds
+        out[skill] = math.ceil(amount / per_conversation * ds.overprovision)
     return out
 
 

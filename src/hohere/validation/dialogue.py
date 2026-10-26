@@ -17,6 +17,14 @@ def words(text: str) -> list[str]:
     return _WORD_RE.findall(text.lower())
 
 
+def dialogue_words(dialogue: Dialogue) -> dict[str, int]:
+    """Words per speaker in the dialogue text (what the listener of each channel hears)."""
+    counts = {"A": 0, "B": 0}
+    for t in dialogue.turns:
+        counts[t.speaker] += len(words(t.text))
+    return counts
+
+
 def estimate_seconds(dialogue: Dialogue, cfg: HohereConfig) -> float:
     """Rough spoken duration before synthesis: floor-holding speech plus pauses."""
     wps = cfg.dialogue.words_per_second
