@@ -1,4 +1,4 @@
-# hohere-dataset v0.3: 100,000 words (both speakers), sized by words instead of hours.
+# hohere-dataset v0.3: 1,000,000 words (both speakers), sized by words instead of hours.
 # User (A, varied Kokoro voices) <-> AI assistant (B, Kokoro af_heart).
 # hohere default configuration. Every field is validated by hohere.config.schema.
 # Omitted fields use schema defaults (see `uv run hohere init /tmp/full.yaml` for all of them).
@@ -10,7 +10,7 @@ project:
 
 dataset:
   target_hours: 20   # ignored when target_words is set
-  target_words: 100000
+  target_words: 1000000
   language: en
   output_dir: ./data/v0.3
   cache_dir: ./data/cache
