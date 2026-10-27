@@ -355,6 +355,23 @@ def dialogues_pull(
     _print_counts("dialogues pulled", result)
 
 
+@dialogues_app.command("texts")
+def dialogues_texts(
+    repo_id: Annotated[str, typer.Option("--repo-id", help="Published dataset repo.")],
+    out: Annotated[Path, typer.Option("--out", help="JSONL file to write.")],
+    token_env: str = "HF_TOKEN",
+) -> None:
+    """Extract dialogue texts of a published dataset, for `dialogue.dedup_against`."""
+    from hohere.publishing.huggingface import PublishError, hub_dialogue_texts
+
+    try:
+        result = hub_dialogue_texts(repo_id, out, token_env)
+    except PublishError as e:
+        console.print(f"[red]texts failed:[/] {e}")
+        raise typer.Exit(1) from e
+    _print_counts("dialogue texts", result)
+
+
 @app.command()
 def pipeline(
     config: ConfigOpt = Path("configs/default.yaml"),
@@ -367,6 +384,40 @@ def pipeline(
     for stage in ("generate", "synthesize", "compose"):
         _print_counts(stage, results[stage]["counts"])
     _print_counts("validation", results["validate"])
+
+
+@app.command()
+def labels(
+    out: Annotated[Path, typer.Option("--out", help="Directory for labels parquet + stats.")],
+    repo_id: Annotated[
+        str | None, typer.Option("--repo-id", help="Published dataset (reads events only).")
+    ] = None,
+    revision: Annotated[str | None, typer.Option(help="Dataset revision (default: main).")] = None,
+    config: ConfigOpt = Path("configs/default.yaml"),
+    dataset: DatasetOpt = None,
+) -> None:
+    """Frame activity (12.5 Hz) + turn-event table + transition stats, for codec models."""
+    if repo_id:
+        from hohere.publishing.huggingface import PublishError, hub_labels
+
+        try:
+            result = hub_labels(repo_id, out, revision)
+        except PublishError as e:
+            console.print(f"[red]labels failed:[/] {e}")
+            raise typer.Exit(1) from e
+        stats = result.pop("stats")
+    else:
+        from hohere.labels import store_labels, write_labels
+        from hohere.storage.local import DatasetStore
+
+        cfg = _load(config, dataset)
+        rows = store_labels(DatasetStore(cfg.dataset.output_dir))
+        stats = write_labels(rows, out, {"output_dir": str(cfg.dataset.output_dir)})
+        result = {"conversations": len(rows), "out": str(out)}
+    _print_counts("labels", result)
+    console.print_json(data={k: stats[k] for k in (
+        "counts", "backchannel_share_assistant", "interruption_share_user_interrupts", "gap_ms",
+        "yield_ms")})
 
 
 @app.command()

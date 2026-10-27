@@ -1,0 +1,95 @@
+# hohere-bench E1: held-out conversations (evaluation only, never trained on).
+# Topics appear in no training corpus (v0.3 defaults, v0.4 list). User voices: four that
+# hohere corpora use and four that no corpus uses. E2 and E5 are derived from this store.
+
+project:
+  name: hohere-bench-e1
+  seed: 7
+  dataset_version: 0.2.0
+
+dataset:
+  target_words: 70000
+  language: en
+  output_dir: ./data/bench-e1
+  cache_dir: ./data/cache
+  id_prefix: e1
+  train_ratio: 0.0
+  validation_ratio: 0.0
+  test_ratio: 1.0
+  overprovision: 1.3
+  skill_mix:
+    simple_dialogue:     {share: 0.30, estimated_seconds: 70, estimated_words: 155, description: "Questions, answers, clarifications, short exchanges."}
+    context_memory:      {share: 0.20, estimated_seconds: 105, estimated_words: 230, description: "Referring back to things said several turns earlier."}
+    turn_taking:         {share: 0.15, estimated_seconds: 85, estimated_words: 185, description: "Varied pauses, hesitation, waiting for a reply."}
+    backchannel:         {share: 0.15, estimated_seconds: 90, estimated_words: 200, description: "'mm-hm', 'right', 'I see' during the other's speech."}
+    interruption:        {share: 0.15, estimated_seconds: 100, estimated_words: 220, description: "Stopping an answer, clarifying, changing direction."}
+    incomplete_thoughts: {share: 0.05, estimated_seconds: 75, estimated_words: 165, description: "Self-correction, resuming an abandoned sentence."}
+  topics:
+    - renewing a library card
+    - choosing a winter coat
+    - a broken bike chain
+    - planning a picnic in the park
+    - learning to swim as an adult
+    - a noisy refrigerator
+    - setting up a fish tank
+    - preparing for a citizenship test
+    - organizing a charity run
+    - writing a speech for a school graduation
+    - a cracked phone screen
+    - choosing a summer camp for kids
+    - making homemade pizza dough
+    - a wasp nest near the balcony
+    - planning a surprise anniversary dinner
+    - comparing electric and gas stoves
+    - learning basic sign language
+    - a delayed train and a missed concert
+    - picking a name for a new puppy
+    - cleaning a cast iron pan
+    - starting a journaling habit
+    - understanding a car insurance quote
+    - building a birdhouse with kids
+    - a leaking roof after heavy rain
+
+dialogue:
+  provider: qwen
+  model: Qwen/Qwen3-30B-A3B-Instruct-2507-FP8
+  temperature: 0.9
+  top_p: 0.95
+  concurrency: 48
+  max_attempts: 5
+  min_turns: 4
+  max_turns: 20
+  max_words_per_utterance: 60
+  min_duration_seconds: 20
+  max_duration_seconds: 180
+  dedup_against: [./data/hohere-1m-texts.jsonl]
+  user_personas:
+    - a librarian, calm and precise, asks exact questions
+    - a delivery driver on a break, quick and practical
+    - a first-year teacher, friendly, a little overwhelmed
+    - a retired engineer, curious, likes to understand how things work
+    - a teenager helping their parent, impatient but polite
+    - a new homeowner, worried about costs, double-checks numbers
+    - an artist, chatty, wanders off topic and comes back
+    - a sports coach, energetic, direct, interrupts when bored
+
+speech:
+  provider: kokoro
+  model: hexgrad/Kokoro-82M
+  sample_rate: 24000
+  model_voice: af_heart
+  model_speed: 1.0
+  # First four appear in hohere training corpora, last four in none (see hohere.bench.suites).
+  user_voices: [af_sarah, am_michael, bf_emma, bm_george, af_river, am_adam, af_sky, bf_lily]
+
+quality:
+  validate_audio: true
+  validate_dialogue: true
+  reject_invalid: true
+
+publishing:
+  provider: huggingface
+  private: true
+  repository_id: manifestro/hohere-bench
+  include_text: true
+  token_env: HF_TOKEN

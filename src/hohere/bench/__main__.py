@@ -61,5 +61,84 @@ def publish(
     console.print(f"published {repo_id} (private){f', tag {tag}' if tag else ''}")
 
 
+def _tts(provider: str):
+    from hohere.config.schema import SpeechConfig
+
+    if provider == "mock":
+        from hohere.synthesis.mock import MockSynthesizer
+
+        return MockSynthesizer(24000)
+    from hohere.synthesis.kokoro import KokoroSynthesizer
+
+    return KokoroSynthesizer(SpeechConfig())
+
+
+StoreOpt = Annotated[Path, typer.Option(help="E1 store (output_dir of configs/bench-e1.yaml).")]
+OutOpt = Annotated[Path, typer.Option(help="Bench export directory.")]
+
+
+@app.command()
+def e2(store: StoreOpt = Path("data/bench-e1"), out: OutOpt = Path("data/bench")) -> None:
+    """E2 single turn, derived from the E1 store."""
+    from hohere.bench.suites import single_turn_rows, write_suite
+    from hohere.storage.local import DatasetStore
+
+    console.print(write_suite(single_turn_rows(DatasetStore(store)), "e2_single_turn", out))
+
+
+@app.command()
+def e4(out: OutOpt = Path("data/bench"), per_cell: int = 25, provider: str = "kokoro") -> None:
+    """E4 memory: templated scripts, one seen and one unseen user voice per item."""
+    from hohere.bench.suites import memory_items, memory_rows, write_suite
+
+    rows = memory_rows(memory_items(per_cell), _tts(provider))
+    console.print(write_suite(rows, "e4_memory", out))
+
+
+@app.command()
+def e5(
+    store: StoreOpt = Path("data/bench-e1"),
+    out: OutOpt = Path("data/bench"),
+    provider: str = "kokoro",
+) -> None:
+    """E5 interruptions (and backchannel controls), derived from the E1 store."""
+    from hohere.bench.suites import interruption_rows, write_suite
+    from hohere.storage.local import DatasetStore
+
+    rows = interruption_rows(DatasetStore(store), _tts(provider))
+    console.print(write_suite(rows, "e5_interruptions", out))
+
+
+@app.command()
+def e6(
+    out: OutOpt = Path("data/bench"),
+    config: Annotated[Path, typer.Option(help="Topics, personas, LLM endpoint.")] = Path(
+        "configs/bench-e1.yaml"
+    ),
+    n: int = 160,
+    provider: str = "kokoro",
+) -> None:
+    """E6 long user turns: texts from the configured LLM endpoint, then TTS."""
+    from hohere.bench.suites import EVAL_VOICES, long_turn_rows, long_turn_texts, write_suite
+    from hohere.config.schema import load_config
+    from hohere.generators.prompts import USER_PERSONAS
+
+    cfg = load_config(config)
+    items = long_turn_texts(
+        cfg.dialogue, cfg.dataset.topics, cfg.dialogue.user_personas or USER_PERSONAS, n
+    )
+    console.print(write_suite(long_turn_rows(items, _tts(provider), EVAL_VOICES),
+                              "e6_long_turns", out))
+
+
+@app.command()
+def card(out: OutOpt = Path("data/bench"), repo_id: str = DEFAULT_REPO) -> None:
+    """Root README covering every suite present in `out` (E3 stays under data/)."""
+    from hohere.bench.suites import bench_card
+
+    (out / "README.md").write_text(bench_card(out, repo_id))
+    console.print(f"wrote {out / 'README.md'}")
+
+
 if __name__ == "__main__":
     app()

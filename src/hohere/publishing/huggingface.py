@@ -566,3 +566,62 @@ def pull_dialogues(
         "prefix": prefix,
         "accepted_dialogues": len(store.accepted_dialogue_ids()),
     }
+
+
+def hub_dialogue_texts(repo_id: str, out: Path, token_env: str = "HF_TOKEN") -> dict:
+    """Write {"id", "text"} JSONL of a published dataset's conversations (spoken turns,
+    no backchannels), for `dialogue.dedup_against`. Reads only the id/events columns."""
+    import pyarrow.parquet as pq
+    from huggingface_hub import HfFileSystem
+
+    fs = HfFileSystem(token=os.environ.get(token_env) or None)
+    files = sorted(fs.glob(f"datasets/{repo_id}/data/*.parquet"))
+    if not files:
+        raise PublishError(f"{repo_id} has no data/*.parquet")
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    n = 0
+    with out.open("w") as f:
+        for name in files:
+            table = pq.read_table(name, columns=["id", "events"], filesystem=fs)
+            for row in table.to_pylist():
+                spoken = [
+                    e["text"]
+                    for e in row["events"]
+                    if e["text"] and e["event_type"] not in ("backchannel", "cutoff")
+                ]
+                if not spoken:
+                    raise PublishError(f"{repo_id} was exported without text")
+                f.write(json.dumps({"id": row["id"], "text": " ".join(spoken)}) + "\n")
+                n += 1
+    return {"repo_id": repo_id, "conversations": n, "out": str(out)}
+
+
+def hub_labels(
+    repo_id: str, out: Path, revision: str | None = None, token_env: str = "HF_TOKEN"
+) -> dict:
+    """Frame activity + event table for a published dataset (reads only metadata and event
+    columns, never audio). Writes the labels companion file and stats into `out`."""
+    import pyarrow.parquet as pq
+    from huggingface_hub import HfApi, HfFileSystem
+
+    from hohere.labels import labels_row, write_labels
+    from hohere.schemas.dataset import Event
+
+    token = os.environ.get(token_env) or None
+    revision = revision or HfApi(token=token).dataset_info(repo_id).sha
+    fs = HfFileSystem(token=token)
+    files = sorted(fs.glob(f"datasets/{repo_id}@{revision}/data/*.parquet"))
+    if not files:
+        raise PublishError(f"{repo_id}@{revision} has no data/*.parquet")
+    cols = ["id", "skill", "sample_rate", "duration_samples", "events"]
+    rows = []
+    for name in files:
+        for r in pq.read_table(name, columns=cols, filesystem=fs).to_pylist():
+            events = [Event.model_validate(e) for e in r["events"]]
+            rows.append(
+                labels_row(r["id"], r["skill"], events, r["duration_samples"], r["sample_rate"])
+            )
+    stats = write_labels(rows, out, {"repo_id": repo_id, "revision": revision})
+    return {"repo_id": repo_id, "revision": revision, "conversations": len(rows),
+            "out": str(out), "stats": stats}
