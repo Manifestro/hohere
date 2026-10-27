@@ -122,6 +122,9 @@ report = pipe.validate()
 Every stage is also usable on its own — see [examples/](examples/) and
 [docs/dataset_format.md](docs/dataset_format.md).
 
+Frame labels (12.5 Hz activity and turn events) and the evaluation suites of
+`hohere-bench`, with scoring protocols: [docs/bench-and-labels.md](docs/bench-and-labels.md).
+
 ## Development
 
 ```bash
