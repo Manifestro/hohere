@@ -59,15 +59,26 @@ def test_downstream_rejections_do_not_count_towards_target(cfg):
     cfg.dataset.overprovision = 3.0
     pipe = Pipeline(cfg, show_progress=False)
     pipe.generate()
-    first = pipe.store.accepted_dialogue_ids()
-    pipe.store.save_rejection(
-        Rejection(
-            conversation_id=first[0],
-            stage="audio",
-            reasons=[RejectionReason(code="duration", message="too long")],
+    words = {
+        c: sum(dialogue_words(pipe.store.load_dialogue(c)).values())
+        for c in pipe.store.accepted_dialogue_ids()
+    }
+    # Reject enough dialogues downstream that the rest falls below the target (parallel
+    # generation may overshoot it by several dialogues).
+    rejected, kept_words = [], sum(words.values())
+    for c in words:
+        if kept_words < 2_000:
+            break
+        pipe.store.save_rejection(
+            Rejection(
+                conversation_id=c,
+                stage="audio",
+                reasons=[RejectionReason(code="duration", message="too long")],
+            )
         )
-    )
+        rejected.append(c)
+        kept_words -= words[c]
     report = pipe.generate()  # tops up to replace the rejected dialogue's words
     assert report["counts"].get("accepted", 0) >= 1
-    kept = [c for c in pipe.store.accepted_dialogue_ids() if c != first[0]]
+    kept = [c for c in pipe.store.accepted_dialogue_ids() if c not in rejected]
     assert sum(sum(dialogue_words(pipe.store.load_dialogue(c)).values()) for c in kept) >= 2_000

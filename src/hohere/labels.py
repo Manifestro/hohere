@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from itertools import pairwise
 
 import numpy as np
 
@@ -88,13 +89,13 @@ def event_table(
             }
         )
 
-    for prev, nxt in zip(floor, floor[1:], strict=False):
+    for prev, nxt in pairwise(floor):
         gap = round((nxt.start_sample - prev.end_sample) * ms)
         add("turn_end", prev, next_speaker=nxt.speaker, gap_ms=gap)
     if floor:
         add("turn_end", floor[-1], next_speaker=None, gap_ms=None)
 
-    for prev, nxt in zip(floor, floor[1:], strict=False):
+    for prev, nxt in pairwise(floor):
         if prev.speaker == nxt.speaker or nxt.event_type is EventType.INTERRUPTION:
             continue
         kind = "response_onset" if nxt.speaker == "B" else "user_onset"
@@ -177,7 +178,7 @@ EVENT_FIELDS = {
     "end_sample": "int64",
     "gap_ms": "int32",
     "yield_ms": "int32",
-    "inside_host": "bool",
+    "inside_host": "bool_",
     "event_id": "string",
 }
 

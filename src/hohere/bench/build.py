@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from hohere.bench.probes import Probe, build_probes
+from hohere.bench.probes import Probe
 from hohere.synthesis.base import SpeechSynthesizer, trim_silence
 
 BENCH_VERSION = "0.1.0"
