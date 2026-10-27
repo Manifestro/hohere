@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections import Counter, defaultdict
+from pathlib import Path
 
 from hohere.config.schema import HohereConfig
 from hohere.schemas.dialogue import Dialogue, PauseHint, RejectionReason, Skill, TurnEvent
@@ -275,10 +277,27 @@ class DuplicateIndex:
         return None
 
     def add(self, dialogue: Dialogue) -> None:
-        text = dialogue_text(dialogue)
-        cid = dialogue.conversation_id
+        self.add_text(dialogue.conversation_id, dialogue_text(dialogue))
+
+    def add_text(self, cid: str, text: str) -> None:
         self._exact[hashlib.sha256(" ".join(words(text)).encode()).hexdigest()] = cid
         sh = _shingles(text)
         self._shingles[cid] = sh
         for s in sh:
             self._postings[s].append(cid)
+
+
+def load_dedup_texts(source: Path) -> dict[str, str]:
+    """Dialogue texts of an earlier part, keyed by conversation id.
+
+    `source` is either a dataset store (its accepted dialogues) or a JSONL file of
+    {"id": ..., "text": ...} lines, e.g. from `hohere dialogues texts`.
+    """
+    from hohere.storage.local import DatasetStore
+
+    source = Path(source)
+    if source.is_file():
+        rows = (json.loads(line) for line in source.read_text().splitlines() if line.strip())
+        return {r["id"]: r["text"] for r in rows}
+    store = DatasetStore(source)
+    return {cid: dialogue_text(store.load_dialogue(cid)) for cid in store.accepted_dialogue_ids()}

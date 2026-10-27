@@ -103,7 +103,7 @@ def build_plan(cfg: HohereConfig) -> list[ConversationSpec]:
             t_lo = lo + round((hi - lo) * b_lo)
             t_hi = lo + round((hi - lo) * b_hi)
             index += 1
-            conv_id = f"conv_{index:06d}"
+            conv_id = f"{cfg.dataset.id_prefix}_{index:06d}"
             specs.append(
                 ConversationSpec(
                     conversation_id=conv_id,

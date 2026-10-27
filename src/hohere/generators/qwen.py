@@ -76,7 +76,7 @@ class QwenGenerator:
     ) -> Dialogue:
         messages = [
             {"role": "system", "content": self._system},
-            {"role": "user", "content": build_user_prompt(spec, feedback)},
+            {"role": "user", "content": build_user_prompt(spec, feedback, self.cfg.user_personas)},
         ]
         try:
             content, served_model = self._chat(messages, seed=spec.seed + attempt)

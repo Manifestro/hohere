@@ -78,6 +78,9 @@ class DatasetConfig(_Strict):
     overprovision: float = Field(default=1.15, ge=1.0)
     skill_mix: dict[Skill, SkillMixEntry] = Field(default_factory=_default_skill_mix)
     topics: list[str] = Field(default_factory=lambda: list(DEFAULT_TOPICS), min_length=1)
+    # Conversation ids are `<id_prefix>_<NNNNNN>`; a distinct prefix per part keeps ids
+    # unique when several parts are published together.
+    id_prefix: str = Field(default="conv", pattern=r"^[a-z][a-z0-9]*$")
 
     @model_validator(mode="after")
     def _check_ratios(self) -> DatasetConfig:
@@ -115,6 +118,10 @@ class DialogueConfig(_Strict):
     min_duration_seconds: float = 20.0
     max_duration_seconds: float = 180.0
     near_duplicate_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    # Accepted dialogues of earlier parts (store roots) also count as duplicates.
+    dedup_against: list[Path] = Field(default_factory=list)
+    # Personas for speaker A; null uses the built-in list.
+    user_personas: list[str] | None = Field(default=None, min_length=1)
     llm_judge: bool = False  # optional Qwen coherence check
 
     @model_validator(mode="after")

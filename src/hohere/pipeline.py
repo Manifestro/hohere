@@ -43,6 +43,7 @@ from hohere.validation.dataset import validate_dataset
 from hohere.validation.dialogue import (
     DuplicateIndex,
     dialogue_words,
+    load_dedup_texts,
     repair_dialogue,
     validate_dialogue,
 )
@@ -130,6 +131,15 @@ class Pipeline:
         dup_index = DuplicateIndex(dc.near_duplicate_threshold)
         for cid in self.store.accepted_dialogue_ids():
             dup_index.add(self.store.load_dialogue(cid))
+        own_ids = {s.conversation_id for s in specs}
+        for source in dc.dedup_against:
+            texts = load_dedup_texts(source)
+            if not texts:
+                raise ValueError(f"dedup_against: no dialogues in {source}")
+            if own_ids.intersection(texts):
+                raise ValueError(f"dedup_against: {source} shares conversation ids; set id_prefix")
+            for cid, text in texts.items():
+                dup_index.add_text(cid, text)
         todo = [
             s
             for s in specs

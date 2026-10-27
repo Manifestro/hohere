@@ -148,21 +148,24 @@ USER_PERSONAS = [
 ]
 
 
-def user_persona(spec: ConversationSpec) -> str:
+def user_persona(spec: ConversationSpec, personas: list[str] | None = None) -> str:
+    personas = personas or USER_PERSONAS
     rng = np.random.default_rng(spec.seed)
-    return USER_PERSONAS[int(rng.integers(len(USER_PERSONAS)))]
+    return personas[int(rng.integers(len(personas)))]
 
 
 def build_system_prompt(max_words: int) -> str:
     return SYSTEM_PROMPT.replace("{max_words}", str(max_words))
 
 
-def build_user_prompt(spec: ConversationSpec, feedback: str | None = None) -> str:
+def build_user_prompt(
+    spec: ConversationSpec, feedback: str | None = None, personas: list[str] | None = None
+) -> str:
     lines = [
         SKILL_BRIEFS[spec.skill],
         "",
         f"Topic: {spec.topic}.",
-        f"User persona (speaker A): {user_persona(spec)}.",
+        f"User persona (speaker A): {user_persona(spec, personas)}.",
         f"Length: about {spec.target_turns} turns (backchannels not counted).",
         "Invent concrete, specific details (names, places, numbers) that fit the topic.",
     ]
