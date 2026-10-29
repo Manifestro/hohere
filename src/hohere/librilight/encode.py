@@ -192,7 +192,7 @@ def resolve_checkpoint(checkpoint: str) -> Path:
     path = Path(checkpoint)
     if path.exists():
         return path
-    repo, _, name = checkpoint.partition("/")
+    repo, _, name = checkpoint.rpartition("/")
     if not repo or not name:
         raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
     from huggingface_hub import hf_hub_download  # lazy: only the encoding extra has it
