@@ -86,7 +86,8 @@ The export loads directly with 🤗 Datasets:
 
 ```python
 from datasets import load_dataset
-ds = load_dataset("namespace/dataset-name")   # or a local export dir
+
+ds = load_dataset("namespace/dataset-name")  # or a local export dir
 row = ds["train"][0]
 row["channel_a"], row["channel_b"], row["events"]
 ```
