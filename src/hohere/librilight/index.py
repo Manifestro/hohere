@@ -94,36 +94,41 @@ def index_headers(
     return [by_offset[offset] for offset in sorted(by_offset)]
 
 
-def check_chain(read_range: ReadRange, headers: Sequence[TarHeader]) -> list[str]:
+def _check_gap(read_range: ReadRange, prev: TarHeader, nxt: TarHeader) -> str | None:
+    """The problem between two consecutive regular entries, or None if they line up."""
+    pos = next_offset(prev)
+    while pos < nxt.header_offset:
+        block = read_range(pos, BLOCK)
+        h = parse_header(block, pos) if len(block) == BLOCK else None
+        if h is None:
+            return f"zero block at {pos}, before {nxt.path!r} at {nxt.header_offset}"
+        if h.typeflag in REGULAR:
+            return (
+                f"hole: {prev.path!r} ends at {pos}, but {h.path!r} starts there"
+                f" ({nxt.path!r} is at {nxt.header_offset})"
+            )
+        pos = next_offset(h)
+    if pos != nxt.header_offset:
+        return f"overrun: {prev.path!r} runs past {nxt.header_offset} to {pos}, losing {nxt.path!r}"
+    return None
+
+
+def check_chain(read_range: ReadRange, headers: Sequence[TarHeader], workers: int = 1) -> list[str]:
     """Problems with the chain of regular entries; an empty list means it is contiguous.
 
     Directory, long-name and pax entries are allowed to sit between two regular
-    entries; anything else that does not line up with `next_offset` is a hole.
+    entries; anything else that does not line up with `next_offset` is a hole. Gaps
+    are independent, so they are checked in `workers` threads (each read of a
+    directory header is a full HTTP round trip).
     """
-    problems: list[str] = []
     ordered = sorted(headers, key=lambda h: h.header_offset)
-    for prev, nxt in pairwise(ordered):
-        pos = next_offset(prev)
-        while pos < nxt.header_offset:
-            block = read_range(pos, BLOCK)
-            h = parse_header(block, pos) if len(block) == BLOCK else None
-            if h is None:
-                problems.append(f"zero block at {pos}, before {nxt.path!r} at {nxt.header_offset}")
-                break
-            if h.typeflag in REGULAR:
-                problems.append(
-                    f"hole: {prev.path!r} ends at {pos}, but {h.path!r} starts there"
-                    f" ({nxt.path!r} is at {nxt.header_offset})"
-                )
-                break
-            pos = next_offset(h)
-        else:
-            if pos != nxt.header_offset:
-                problems.append(
-                    f"overrun: {prev.path!r} runs past {nxt.header_offset} to {pos},"
-                    f" losing {nxt.path!r}"
-                )
-    return problems
+    pairs = list(pairwise(ordered))
+    if workers <= 1:
+        found = [_check_gap(read_range, prev, nxt) for prev, nxt in pairs]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            found = list(pool.map(lambda pn: _check_gap(read_range, pn[0], pn[1]), pairs))
+    return [problem for problem in found if problem is not None]
 
 
 def _header_line(h: TarHeader) -> dict:
@@ -211,7 +216,7 @@ def run_index(
         total = source.size()
         log.info("%s: %d bytes in %d parts", url, total, parts)
         headers = index_headers(source.read, total, parts, workers)
-        problems = check_chain(source.read, headers)
+        problems = check_chain(source.read, headers, workers)
         if problems:
             raise RuntimeError(
                 f"the archive does not form one contiguous chain ({len(problems)} problems):\n"
