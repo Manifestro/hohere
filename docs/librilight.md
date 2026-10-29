@@ -59,7 +59,10 @@ uv run hohere librilight finalize --work /workspace/ll --repo <namespace>/libril
 
 `finalize` merges the per-part manifests, runs the acceptance checks (ids, chapter
 numbering, exclusions, checksums, tensor shapes and the silent channel) and writes
-`release/checks.json` either way. Only a passing release is packed:
-`release/<split>/shard-0000.tar, …` of about 1 GB, `manifest.jsonl` and
-`silence_codes.json`. With `--repo` the folder is uploaded in commits of at most 20
-files, retrying on 429; the token comes from `$HF_TOKEN`.
+`release/checks.json` either way. Checksums and tensors are the expensive part — one
+sha256 and one `torch.load` per token file, 1.25M of them — so they run in a process
+pool of `--workers` (default: every core, chunks of 256 files). Only a passing release
+is packed: `release/<split>/shard-0000.tar, …` of about 1 GB, `manifest.jsonl` and
+`silence_codes.json` (the plain list of the 8 codes, e.g.
+`[1049, 1700, 1626, 546, 306, 1443, 1871, 2008]`). With `--repo` the folder is uploaded
+in commits of at most 20 files, retrying on 429; the token comes from `$HF_TOKEN`.

@@ -2,7 +2,9 @@
 
 Acceptance is a hard gate: ids, per-chapter numbering, exclusions, checksums, tensor
 shape and the silent channel are all verified before anything is packed, and the
-report goes to `release/checks.json` whether it passed or not. The shards are plain
+report goes to `release/checks.json` whether it passed or not. The per-file part of
+the check (a sha256 and a `torch.load` of each of ~1.25M token files) runs in a
+process pool; the id and exclusion checks stay in this process. The shards are plain
 tars of `tokens/<id>.pt` in manifest order, plus `manifest.jsonl` and
 `silence_codes.json`, so a release is a folder plus one upload per few dozen files.
 """
@@ -15,8 +17,10 @@ import os
 import tarfile
 import time
 from collections import Counter, defaultdict
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from hohere.librilight.activity import FRAME_SAMPLES, SAMPLE_RATE, SILENCE_CODES
@@ -31,6 +35,7 @@ FRAME_RATE = SAMPLE_RATE / FRAME_SAMPLES
 SHARD_BYTES = 1_000_000_000
 PER_COMMIT = 20
 UPLOAD_RETRIES = 5
+CHECK_CHUNK = 256
 
 
 @dataclass(frozen=True)
@@ -161,17 +166,71 @@ def check_tokens(entry: Entry, problems: list[str]) -> None:
         problems.append(f"{path}: channel {silent} has activity")
 
 
+@dataclass(frozen=True)
+class EntryResult:
+    """What checking one entry found, so the pool only ships small picklable values."""
+
+    problems: tuple[str, ...] = ()
+    frames: int = 0
+    missing: bool = False
+    skipped: bool = False
+
+
+def check_entry(entry: Entry, check_tensor: bool = True) -> EntryResult:
+    """Existence, checksum and tensors of one token file; a job for a worker process.
+
+    Module level and free of module state so it pickles: at 1.25M files the check is
+    one `stat`, one sha256 and one `torch.load` each.
+    """
+    if not entry.path.exists():
+        return EntryResult(problems=(f"missing {entry.path}",), missing=True)
+    frames = int(entry.line["frames"])
+    if not check_tensor:
+        return EntryResult(frames=frames)
+    problems: list[str] = []
+    try:
+        check_tokens(entry, problems)
+    except ImportError:  # no torch here: shapes are skipped, not failed
+        return EntryResult(frames=frames, skipped=True)
+    except Exception as e:  # a corrupt file is a problem, not a crash mid-release
+        problems.append(f"{entry.path}: {e}")
+    return EntryResult(tuple(problems), frames=frames)
+
+
+def entry_results(
+    entries: Sequence[Entry], check_tensor: bool = True, workers: int | None = None
+) -> Iterator[EntryResult]:
+    """`check_entry` over `entries` in order, in a chunked pool once it pays off.
+
+    `workers=None` means every core. A release smaller than one chunk is checked
+    inline, where starting a pool would cost more than the work itself.
+    """
+    if workers is None:
+        workers = os.cpu_count() or 1
+    if workers <= 1 or len(entries) < CHECK_CHUNK:
+        for entry in entries:
+            yield check_entry(entry, check_tensor)
+        return
+    chunk = max(1, min(CHECK_CHUNK, len(entries) // (workers * 8)))
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        yield from pool.map(
+            partial(check_entry, check_tensor=check_tensor), entries, chunksize=chunk
+        )
+
+
 def check(
     entries: Sequence[Entry],
     exclude_speakers: Iterable[str] = (),
     exclude_recordings: Iterable[Iterable[str]] = (),
     stems: Mapping[str, Collection[str]] | None = None,
     check_tensor: bool = True,
+    workers: int | None = None,
 ) -> dict:
     """The acceptance report: `ok`, `problems` and the release statistics.
 
     `stems` maps an id without its index to the `stem` of its recording, which is how
-    an excluded recording is spotted; see `chapter_stems`.
+    an excluded recording is spotted; see `chapter_stems`. `workers` is the size of
+    the process pool; see `entry_results`.
     """
     problems: list[str] = []
     chapters = _check_ids(entries, problems)
@@ -179,20 +238,11 @@ def check(
     missing_files = 0
     frames = 0
     skipped_tensors = 0
-    for entry in entries:
-        if not entry.path.exists():
-            problems.append(f"missing {entry.path}")
-            missing_files += 1
-            continue
-        frames += int(entry.line["frames"])
-        if not check_tensor:
-            continue
-        try:
-            check_tokens(entry, problems)
-        except ImportError:
-            skipped_tensors += 1
-        except Exception as e:  # a corrupt file is a problem, not a crash mid-release
-            problems.append(f"{entry.path}: {e}")
+    for result in entry_results(entries, check_tensor, workers):
+        problems.extend(result.problems)
+        frames += result.frames
+        missing_files += result.missing
+        skipped_tensors += result.skipped
     speakers = Counter(entry.line["user_voice"] for entry in entries)
     chapter_frames: dict[str, int] = defaultdict(int)
     for entry in entries:
@@ -252,14 +302,9 @@ def shard_index(path: Path) -> list[str]:
         return tar.getnames()
 
 
-def silence_codes() -> dict:
-    return {
-        "codes": list(SILENCE_CODES),
-        "codebooks": len(SILENCE_CODES),
-        "sample_rate": SAMPLE_RATE,
-        "frame_samples": FRAME_SAMPLES,
-        "frame_rate": FRAME_RATE,
-    }
+def silence_codes() -> list[int]:
+    """The 8 codes Mimi gives digital silence; `release/.../silence_codes.json` is this list."""
+    return list(SILENCE_CODES)
 
 
 def _is_rate_limit(error: Exception) -> bool:
@@ -328,6 +373,7 @@ def run_finalize(
     private: bool = True,
     token_env: str = "HF_TOKEN",
     check_tensor: bool = True,
+    workers: int | None = None,
 ) -> dict:
     """Merge, check, pack and optionally upload one release."""
     work = Path(work)
@@ -341,6 +387,7 @@ def run_finalize(
         exclude_recordings=summary.get("exclude_recordings", ()),
         stems=chapter_stems(work),
         check_tensor=check_tensor,
+        workers=workers,
     )
     out.mkdir(parents=True, exist_ok=True)
     tmp = out / "checks.tmp"
@@ -354,7 +401,7 @@ def run_finalize(
     folder = out / split
     shards = pack_shards(entries, folder, shard_bytes)
     write_manifest(folder / "manifest.jsonl", entries)
-    (folder / "silence_codes.json").write_text(json.dumps(silence_codes(), indent=2))
+    (folder / "silence_codes.json").write_text(json.dumps(silence_codes()))
     result = {"report": report, "shards": [p.name for p in shards], "folder": str(folder)}
     if repo:
         result["upload"] = upload(folder, repo, private=private, token_env=token_env)

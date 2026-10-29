@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import json
 import tarfile
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from hohere.librilight import finalize
+from hohere.librilight.activity import SILENCE_CODES
 from hohere.librilight.encode import manifest_line
 from hohere.librilight.finalize import (
+    CHECK_CHUNK,
     Entry,
     chapter_stems,
     check,
+    check_entry,
     merge,
     pack_shards,
     run_finalize,
@@ -165,6 +170,11 @@ def test_pack_shards_puts_every_file_once(tmp_path: Path) -> None:
     assert len(shards) == 2  # two 4000-byte files fit, the third starts a shard
 
 
+def test_silence_codes_is_the_plain_list_of_codes() -> None:
+    assert silence_codes() == [1049, 1700, 1626, 546, 306, 1443, 1871, 2008]
+    assert silence_codes() == list(SILENCE_CODES)
+
+
 def test_run_finalize_writes_the_release_and_the_report(tmp_path: Path) -> None:
     work = make_work(tmp_path / "work", {0: [line("0007", "book_01_a", i) for i in range(2)]})
     (work / "index_summary.json").write_text(json.dumps({"exclude_speakers": []}))
@@ -174,6 +184,9 @@ def test_run_finalize_writes_the_release_and_the_report(tmp_path: Path) -> None:
     assert (work / "release" / "checks.json").exists()
     assert result["report"]["ok"]
     assert json.loads((folder / "silence_codes.json").read_text()) == silence_codes()
+    assert (folder / "silence_codes.json").read_text() == (
+        "[1049, 1700, 1626, 546, 306, 1443, 1871, 2008]"  # a plain list, not an object
+    )
     assert [json.loads(x)["id"] for x in (folder / "manifest.jsonl").read_text().splitlines()] == [
         "0007-book_01_a-0",
         "0007-book_01_a-1",
@@ -186,6 +199,59 @@ def test_run_finalize_refuses_a_bad_release(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="problems"):
         run_finalize(work, check_tensor=False)
     assert json.loads((work / "release" / "checks.json").read_text())["ok"] is False
+
+
+def many_work(tmp_path: Path, count: int, missing: int = 0) -> list[Entry]:
+    """A `part-0` folder of `count` one-segment chapters, the last `missing` of them gone."""
+    lines = [line("0007", f"book_{i:04d}_a", 0) for i in range(count)]
+    work = make_work(tmp_path / "work", {0: lines})
+    for entry in lines[count - missing :]:
+        (work / "part-0" / "tokens" / f"{entry['id']}.pt").unlink()
+    return merge(work)
+
+
+def test_entry_check_is_one_picklable_result_per_entry(tmp_path: Path) -> None:
+    work = make_work(tmp_path, {0: [line("0007", "book_01_a", 0, frames=7)]})
+    entry = merge(work)[0]
+    result = check_entry(entry, check_tensor=False)
+    assert (result.problems, result.frames, result.missing) == ((), 7, False)
+    (work / "part-0" / "tokens" / f"{entry.line['id']}.pt").unlink()
+    missing = check_entry(entry, check_tensor=False)
+    assert missing.missing and "missing" in missing.problems[0] and missing.frames == 0
+
+
+def test_a_big_release_is_checked_in_a_process_pool(tmp_path: Path, monkeypatch) -> None:
+    entries = many_work(tmp_path, CHECK_CHUNK + 44, missing=2)
+    pools: list[int] = []
+
+    class Spy(ProcessPoolExecutor):
+        def map(self, *args, **kwargs):
+            pools.append(self._max_workers)
+            return super().map(*args, **kwargs)
+
+    monkeypatch.setattr(finalize, "ProcessPoolExecutor", Spy)
+    inline = check(entries, check_tensor=False, workers=1)  # explicit: no pool
+    assert pools == []
+    pooled = check(entries, check_tensor=False, workers=2)
+    assert pools == [2]
+    assert pooled == inline  # same aggregation, just spread over the workers
+    assert pooled["segments"] == CHECK_CHUNK + 44
+    assert pooled["missing_files"] == 2
+    kept = len(entries) - 2  # a missing file contributes no frames
+    assert pooled["hours"] == pytest.approx(round(kept * 100 / 12.5 / 3600, 4))
+    assert sum("missing" in problem for problem in pooled["problems"]) == 2
+
+
+def test_the_pool_skips_the_tensors_when_torch_is_missing(tmp_path: Path) -> None:
+    try:
+        import torch  # noqa: F401 - the pod has it, so there is nothing to skip
+    except ImportError:
+        pass
+    else:
+        pytest.skip("torch is installed: the pool checks the tensors instead of skipping")
+    entries = many_work(tmp_path, CHECK_CHUNK)
+    report = check(entries, workers=2)
+    assert report["tensors_skipped"] == len(entries) and report["ok"]
 
 
 class FakeApi:

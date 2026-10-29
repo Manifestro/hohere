@@ -461,6 +461,10 @@ def librilight_finalize(
     token_env: Annotated[
         str, typer.Option("--token-env", help="Env var with the HF token.")
     ] = "HF_TOKEN",
+    workers: Annotated[
+        int | None,
+        typer.Option("--workers", min=1, help="Processes checking token files (all cores)."),
+    ] = None,
 ) -> None:
     """Merge, check and pack the release (optionally upload it)."""
     from hohere.librilight.finalize import run_finalize
@@ -473,6 +477,7 @@ def librilight_finalize(
         repo=repo,
         private=private,
         token_env=token_env,
+        workers=workers,
     )
     _print_counts("libri-light finalize", result["report"] | {"shards": result["shards"]})
 
