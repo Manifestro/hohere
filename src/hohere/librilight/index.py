@@ -38,7 +38,6 @@ TAR_MD5 = "c75e7ac62471bfbf2db77528d62a9b74"
 PARTS = 512
 WORKERS = 64
 SCAN_CHUNK = 1 << 20
-SCAN_LIMIT = 64 << 20
 STREAMINFO_BYTES = 4096
 
 ReadRange = Callable[[int, int], bytes]
@@ -51,7 +50,9 @@ def _scan(read_range: ReadRange, start: int, end: int) -> int | None:
     but ends past it is still found when the slice is narrower than a header.
     """
     pos = start
-    limit = min(end, start + SCAN_LIMIT)
+    # No cap: one FLAC can be larger than a slice, so the first header may sit anywhere
+    # in it (a cap once dropped two whole slices, caught by `check_chain`).
+    limit = end
     while pos < limit:
         n = min(SCAN_CHUNK, limit - pos) + BLOCK
         buf = read_range(pos, n)
