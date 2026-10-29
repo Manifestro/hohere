@@ -140,6 +140,11 @@ def segment(
             dirty = True
         current = []
 
+    def _ready(indices: list[int]) -> bool:
+        start, end = spans[indices[0]][0], spans[indices[-1]][1]
+        intervals = [iv for i in indices for iv in groups[i]]
+        return _has_internal_pause(_Candidate(start, end, intervals), cfg)
+
     for i, (start, end) in enumerate(spans):
         if end - start > cfg.max_len:
             # Rule 4: a run longer than max_len is dropped, never cut inside. The padded
@@ -147,12 +152,14 @@ def segment(
             close()
             dirty = True
             continue
-        if current and end - spans[current[0]][0] > cfg.max_len:
-            close()
-            current = [i]
-        else:
-            current.append(i)
-        if end - spans[current[0]][0] >= cfg.min_len:
+        # Libri-Light VAD runs are long (median ~10 s), so one run often reaches min_len
+        # alone and has no pause inside. Keep growing until the segment also has a usable
+        # internal pause; on overflow drop runs from the front instead of the whole stretch.
+        while current and end - spans[current[0]][0] > cfg.max_len:
+            current.pop(0)
+            dirty = True
+        current.append(i)
+        if end - spans[current[0]][0] >= cfg.min_len and _ready(current):
             close()
 
     if current:

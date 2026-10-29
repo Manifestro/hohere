@@ -129,3 +129,10 @@ def test_segment_invariants_on_random_vads() -> None:
             assert inside
             assert inside[0][0] - s.start <= CFG.edge_pad + EPS
             assert s.end - inside[-1][1] <= CFG.edge_pad + EPS
+
+
+def test_a_run_that_reaches_min_len_alone_waits_for_a_pause() -> None:
+    # Libri-Light VAD runs are ~10 s: the first run is long enough but has no pause,
+    # so the segment grows into the next run instead of being thrown away.
+    vad = [(1.0, 11.0), (11.6, 16.0)]
+    assert spans(segment(vad, 30.0)) == [(0.5, 16.5)]
