@@ -19,8 +19,19 @@ import numpy as np
 # (question template, answer template); {x} is the slot, {X} the capitalized slot.
 ECHO: dict[str, tuple[list[str], list[tuple[str, str]]]] = {
     "color": (
-        ["red", "blue", "green", "yellow", "black", "white", "orange", "purple", "pink",
-         "brown", "gray"],
+        [
+            "red",
+            "blue",
+            "green",
+            "yellow",
+            "black",
+            "white",
+            "orange",
+            "purple",
+            "pink",
+            "brown",
+            "gray",
+        ],
         [
             ("Can you find the {x} mug for me?", "The {x} mug is on the top shelf."),
             ("I want to paint the bedroom {x}.", "{X} would look great in the bedroom."),
@@ -31,8 +42,19 @@ ECHO: dict[str, tuple[list[str], list[tuple[str, str]]]] = {
         ],
     ),
     "number": (
-        ["two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
-         "twelve"],
+        [
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+        ],
         [
             ("I need {x} tickets for tonight.", "Okay, {x} tickets for tonight."),
             ("Set a timer for {x} minutes.", "Timer set for {x} minutes."),
@@ -43,8 +65,20 @@ ECHO: dict[str, tuple[list[str], list[tuple[str, str]]]] = {
         ],
     ),
     "name": (
-        ["Anna", "David", "Maria", "James", "Sophie", "Daniel", "Laura", "Peter", "Emma",
-         "Michael", "Olivia", "Thomas"],
+        [
+            "Anna",
+            "David",
+            "Maria",
+            "James",
+            "Sophie",
+            "Daniel",
+            "Laura",
+            "Peter",
+            "Emma",
+            "Michael",
+            "Olivia",
+            "Thomas",
+        ],
         [
             ("Please call {x} for me.", "Calling {x} now."),
             ("I'm meeting {x} for lunch.", "Say hi to {x} for me."),
@@ -54,8 +88,20 @@ ECHO: dict[str, tuple[list[str], list[tuple[str, str]]]] = {
         ],
     ),
     "city": (
-        ["Paris", "Tokyo", "Berlin", "Madrid", "Chicago", "Sydney", "Toronto", "Rome",
-         "Dublin", "Boston", "Lisbon", "Vienna"],
+        [
+            "Paris",
+            "Tokyo",
+            "Berlin",
+            "Madrid",
+            "Chicago",
+            "Sydney",
+            "Toronto",
+            "Rome",
+            "Dublin",
+            "Boston",
+            "Lisbon",
+            "Vienna",
+        ],
         [
             ("Book me a flight to {x}.", "Looking for flights to {x}."),
             ("What's the weather like in {x}?", "Let me check the weather in {x}."),
@@ -65,8 +111,20 @@ ECHO: dict[str, tuple[list[str], list[tuple[str, str]]]] = {
         ],
     ),
     "object": (
-        ["umbrella", "wallet", "laptop", "jacket", "passport", "charger", "backpack",
-         "notebook", "scarf", "phone", "camera", "helmet"],
+        [
+            "umbrella",
+            "wallet",
+            "laptop",
+            "jacket",
+            "passport",
+            "charger",
+            "backpack",
+            "notebook",
+            "scarf",
+            "phone",
+            "camera",
+            "helmet",
+        ],
         [
             ("I can't find my {x}.", "Your {x} is on the table by the door."),
             ("Did I pack my {x}?", "Yes, your {x} is in the side pocket."),
@@ -90,60 +148,121 @@ ECHO: dict[str, tuple[list[str], list[tuple[str, str]]]] = {
 # Each frame: (category, [(question_x, question_y), ...], answer_x, answer_y).
 # The question variants are paraphrases; x and y differ in the fact that decides the answer.
 INFER: list[tuple[str, list[tuple[str, str]], str, str]] = [
-    ("weather", [
-        ("It's pouring outside, should I take an umbrella?",
-         "It's sunny outside, should I take an umbrella?"),
-        ("It's raining hard right now, do I need an umbrella?",
-         "It's bright and dry right now, do I need an umbrella?"),
-        ("Look at that storm, will I need an umbrella?",
-         "Look at that clear sky, will I need an umbrella?"),
-    ], "Yes, take the umbrella, you'll need it.", "No, you won't need an umbrella today."),
-    ("temperature", [
-        ("It's freezing in here.", "It's boiling in here."),
-        ("I'm so cold in this room.", "I'm so hot in this room."),
-        ("Brr, this room is icy.", "Phew, this room is stuffy and hot."),
-    ], "Let me turn the heating up.", "Let me turn the air conditioning on."),
-    ("greeting", [
-        ("Good morning!", "Good night!"),
-        ("Morning, I just woke up.", "Night, I'm off to bed."),
-        ("Hi, I'm just getting up.", "Okay, I'm going to sleep now."),
-    ], "Good morning, did you sleep well?", "Good night, sleep well."),
-    ("hunger", [
-        ("I'm starving.", "I'm so full."),
-        ("I haven't eaten all day.", "I just ate a huge lunch."),
-        ("My stomach is growling.", "I couldn't eat another bite."),
-    ], "Let's get you something to eat.", "Then let's skip dessert."),
-    ("light", [
-        ("It's too dark in here.", "It's too bright in here."),
-        ("I can barely see anything in this room.", "The light in here is blinding."),
-        ("This room is so dim.", "This room is so glaring."),
-    ], "I'll turn the lights on.", "I'll dim the lights."),
-    ("time", [
-        ("I'm running late.", "I'm way too early."),
-        ("The bus leaves in two minutes and I'm still home.",
-         "The bus leaves in an hour and I'm already at the stop."),
-        ("Oh no, I overslept.", "I woke up two hours before my alarm."),
-    ], "Hurry, you can still make it.", "Then you have time for a coffee."),
-    ("news", [
-        ("I just got some great news!", "I just got some terrible news."),
-        ("I passed my driving test!", "I failed my driving test."),
-        ("I got the job!", "I didn't get the job."),
-    ], "That's wonderful, congratulations!", "Oh no, I'm so sorry to hear that."),
-    ("volume", [
-        ("I can't hear the music at all.", "The music is way too loud."),
-        ("Can you make it louder? It's so quiet.", "Can you make it quieter? It hurts my ears."),
-        ("I can barely hear the radio.", "The radio is blasting."),
-    ], "Sure, turning it up.", "Sure, turning it down."),
-    ("health", [
-        ("I feel great today.", "I feel sick today."),
-        ("I slept well and I'm full of energy.", "I have a fever and a sore throat."),
-        ("I'm feeling fantastic this morning.", "I'm feeling awful this morning."),
-    ], "Glad to hear it, enjoy your day.", "Sorry to hear that, maybe rest at home."),
-    ("thirst", [
-        ("I'm really thirsty.", "I've had enough to drink."),
-        ("My mouth is so dry.", "I just drank three glasses of water."),
-        ("I need something to drink.", "No more drinks for me, thanks."),
-    ], "Here, have a glass of water.", "Okay, I won't pour you another one."),
+    (
+        "weather",
+        [
+            (
+                "It's pouring outside, should I take an umbrella?",
+                "It's sunny outside, should I take an umbrella?",
+            ),
+            (
+                "It's raining hard right now, do I need an umbrella?",
+                "It's bright and dry right now, do I need an umbrella?",
+            ),
+            (
+                "Look at that storm, will I need an umbrella?",
+                "Look at that clear sky, will I need an umbrella?",
+            ),
+        ],
+        "Yes, take the umbrella, you'll need it.",
+        "No, you won't need an umbrella today.",
+    ),
+    (
+        "temperature",
+        [
+            ("It's freezing in here.", "It's boiling in here."),
+            ("I'm so cold in this room.", "I'm so hot in this room."),
+            ("Brr, this room is icy.", "Phew, this room is stuffy and hot."),
+        ],
+        "Let me turn the heating up.",
+        "Let me turn the air conditioning on.",
+    ),
+    (
+        "greeting",
+        [
+            ("Good morning!", "Good night!"),
+            ("Morning, I just woke up.", "Night, I'm off to bed."),
+            ("Hi, I'm just getting up.", "Okay, I'm going to sleep now."),
+        ],
+        "Good morning, did you sleep well?",
+        "Good night, sleep well.",
+    ),
+    (
+        "hunger",
+        [
+            ("I'm starving.", "I'm so full."),
+            ("I haven't eaten all day.", "I just ate a huge lunch."),
+            ("My stomach is growling.", "I couldn't eat another bite."),
+        ],
+        "Let's get you something to eat.",
+        "Then let's skip dessert.",
+    ),
+    (
+        "light",
+        [
+            ("It's too dark in here.", "It's too bright in here."),
+            ("I can barely see anything in this room.", "The light in here is blinding."),
+            ("This room is so dim.", "This room is so glaring."),
+        ],
+        "I'll turn the lights on.",
+        "I'll dim the lights.",
+    ),
+    (
+        "time",
+        [
+            ("I'm running late.", "I'm way too early."),
+            (
+                "The bus leaves in two minutes and I'm still home.",
+                "The bus leaves in an hour and I'm already at the stop.",
+            ),
+            ("Oh no, I overslept.", "I woke up two hours before my alarm."),
+        ],
+        "Hurry, you can still make it.",
+        "Then you have time for a coffee.",
+    ),
+    (
+        "news",
+        [
+            ("I just got some great news!", "I just got some terrible news."),
+            ("I passed my driving test!", "I failed my driving test."),
+            ("I got the job!", "I didn't get the job."),
+        ],
+        "That's wonderful, congratulations!",
+        "Oh no, I'm so sorry to hear that.",
+    ),
+    (
+        "volume",
+        [
+            ("I can't hear the music at all.", "The music is way too loud."),
+            (
+                "Can you make it louder? It's so quiet.",
+                "Can you make it quieter? It hurts my ears.",
+            ),
+            ("I can barely hear the radio.", "The radio is blasting."),
+        ],
+        "Sure, turning it up.",
+        "Sure, turning it down.",
+    ),
+    (
+        "health",
+        [
+            ("I feel great today.", "I feel sick today."),
+            ("I slept well and I'm full of energy.", "I have a fever and a sore throat."),
+            ("I'm feeling fantastic this morning.", "I'm feeling awful this morning."),
+        ],
+        "Glad to hear it, enjoy your day.",
+        "Sorry to hear that, maybe rest at home.",
+    ),
+    (
+        "thirst",
+        [
+            ("I'm really thirsty.", "I've had enough to drink."),
+            ("My mouth is so dry.", "I just drank three glasses of water."),
+            ("I need something to drink.", "No more drinks for me, thanks."),
+        ],
+        "Here, have a glass of water.",
+        "Okay, I won't pour you another one.",
+    ),
 ]
 
 

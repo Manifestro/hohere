@@ -128,6 +128,9 @@ Every stage is also usable on its own — see [examples/](examples/) and
 Frame labels (12.5 Hz activity and turn events) and the evaluation suites of
 `hohere-bench`, with scoring protocols: [docs/bench-and-labels.md](docs/bench-and-labels.md).
 
+Libri-Light `medium.tar` → Mimi token files (`hohere librilight index|encode|finalize`):
+[docs/librilight.md](docs/librilight.md).
+
 ## Development
 
 ```bash

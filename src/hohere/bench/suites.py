@@ -214,18 +214,46 @@ def interruption_rows(
 
 # -- E4: memory ------------------------------------------------------------------------
 
-OBJECTS = ["keys", "wallet", "passport", "glasses", "charger", "headphones", "notebook",
-           "watch", "umbrella", "ticket", "remote", "scarf"]
-LOCATIONS = ["blue box", "kitchen drawer", "red bag", "top shelf", "car", "coat pocket",
-             "bedroom closet", "garden shed", "desk drawer", "laundry basket", "green basket",
-             "hallway cabinet"]
-FACT = ["I put my {o} in the {l}.", "Just so you know, my {o} {be} in the {l}.",
-        "Remember, I left my {o} in the {l}."]
-UPDATE = ["Oh, I moved my {o} to the {l}.", "Actually, my {o} {be} in the {l} now.",
-          "Change of plan, I put my {o} in the {l}."]
+OBJECTS = [
+    "keys",
+    "wallet",
+    "passport",
+    "glasses",
+    "charger",
+    "headphones",
+    "notebook",
+    "watch",
+    "umbrella",
+    "ticket",
+    "remote",
+    "scarf",
+]
+LOCATIONS = [
+    "blue box",
+    "kitchen drawer",
+    "red bag",
+    "top shelf",
+    "car",
+    "coat pocket",
+    "bedroom closet",
+    "garden shed",
+    "desk drawer",
+    "laundry basket",
+    "green basket",
+    "hallway cabinet",
+]
+FACT = [
+    "I put my {o} in the {l}.",
+    "Just so you know, my {o} {be} in the {l}.",
+    "Remember, I left my {o} in the {l}.",
+]
+UPDATE = [
+    "Oh, I moved my {o} to the {l}.",
+    "Actually, my {o} {be} in the {l} now.",
+    "Change of plan, I put my {o} in the {l}.",
+]
 ACK = ["Okay, noted.", "Got it.", "Sure, I'll remember that.", "Alright."]
-QUESTION = ["Where did I put my {o}?", "Where {be} my {o}?",
-            "Do you remember where my {o} {be}?"]
+QUESTION = ["Where did I put my {o}?", "Where {be} my {o}?", "Do you remember where my {o} {be}?"]
 ANSWER = "{Pron} in the {l}."
 # Small talk that never mentions objects or places from the lists above.
 DISTRACTORS = [
@@ -251,8 +279,9 @@ E4_GAP_S, E4_LEAD_S, E4_TAIL_S = 0.5, 0.5, 0.5
 
 def _fill(template: str, obj: str, loc: str = "") -> str:
     plural = obj in _PLURAL
-    return template.format(o=obj, l=loc, be="are" if plural else "is",
-                           Pron="They're" if plural else "It's")
+    return template.format(
+        o=obj, l=loc, be="are" if plural else "is", Pron="They're" if plural else "It's"
+    )
 
 
 def memory_items(per_cell: int = 25, seed: int = 2026) -> list[dict]:
@@ -265,16 +294,19 @@ def memory_items(per_cell: int = 25, seed: int = 2026) -> list[dict]:
                 obj = OBJECTS[int(rng.integers(len(OBJECTS)))]
                 locs = [LOCATIONS[i] for i in rng.choice(len(LOCATIONS), 4, replace=False)]
                 first, final = locs[0], (locs[1] if update else locs[0])
-                turns = [("A", _fill(FACT[int(rng.integers(len(FACT)))], obj, first)),
-                         ("B", ACK[int(rng.integers(len(ACK)))])]
+                turns = [
+                    ("A", _fill(FACT[int(rng.integers(len(FACT)))], obj, first)),
+                    ("B", ACK[int(rng.integers(len(ACK)))]),
+                ]
                 for i in rng.choice(len(DISTRACTORS), distance, replace=False):
                     turns += [("A", DISTRACTORS[i][0]), ("B", DISTRACTORS[i][1])]
                 if update:
                     # the update comes after half of the distractors (right away if none)
                     at = 2 + 2 * (distance // 2)
-                    turns[at:at] = [("A", _fill(UPDATE[int(rng.integers(len(UPDATE)))], obj,
-                                                final)),
-                                    ("B", ACK[int(rng.integers(len(ACK)))])]
+                    turns[at:at] = [
+                        ("A", _fill(UPDATE[int(rng.integers(len(UPDATE)))], obj, final)),
+                        ("B", ACK[int(rng.integers(len(ACK)))]),
+                    ]
                 turns.append(("A", _fill(QUESTION[int(rng.integers(len(QUESTION)))], obj)))
                 # candidates: correct, the stale location (if updated), then distinct others
                 others = [loc for loc in locs if loc not in (final, first)]
@@ -330,9 +362,13 @@ def memory_rows(
                 voice,
                 a,
                 b,
-                {"turns": it["turns"], "candidates": it["candidates"],
-                 "candidate_locations": it["candidate_locations"], "object": it["object"],
-                 "update_distance": it["update_distance"]},
+                {
+                    "turns": it["turns"],
+                    "candidates": it["candidates"],
+                    "candidate_locations": it["candidate_locations"],
+                    "object": it["object"],
+                    "update_distance": it["update_distance"],
+                },
             )
             row.update(
                 {
@@ -343,8 +379,10 @@ def memory_rows(
                     "question_end_frame": _frame_end(placed[-1][1] + len(placed[-1][2])),
                     "answer_start_sample": answer_start,
                     "answer_start_frame": _frame(answer_start),
-                    **{f"candidate_{i}_audio": _wav(c, f"{rid}_c{i}.wav")
-                       for i, c in enumerate(cands)},
+                    **{
+                        f"candidate_{i}_audio": _wav(c, f"{rid}_c{i}.wav")
+                        for i, c in enumerate(cands)
+                    },
                 }
             )
             rows.append(row)
@@ -364,8 +402,9 @@ no lists, no stage directions, no quotes. Persona: {persona}. Topic: {topic}.
 Answer with ONLY a JSON object: {{"sentences": ["...", "..."]}}"""
 
 
-def long_turn_texts(dialogue_cfg, topics: list[str], personas: list[str], n: int,
-                    seed: int = 2026) -> list[dict]:
+def long_turn_texts(
+    dialogue_cfg, topics: list[str], personas: list[str], n: int, seed: int = 2026
+) -> list[dict]:
     """Ask the configured OpenAI-compatible endpoint (vLLM) for `n` long user turns."""
     from hohere.generators.qwen import QwenGenerator, extract_json
 
@@ -379,20 +418,27 @@ def long_turn_texts(dialogue_cfg, topics: list[str], personas: list[str], n: int
         persona = personas[int(rng.integers(len(personas)))]
         prompt = LONG_TURN_PROMPT.format(persona=persona, topic=topic)
         try:
-            content, model = gen._chat([{"role": "user", "content": prompt}],
-                                       seed=seed + attempts)
+            content, model = gen._chat([{"role": "user", "content": prompt}], seed=seed + attempts)
             sentences = [s.strip() for s in extract_json(content)["sentences"] if s.strip()]
         except Exception:
             continue
         words = sum(len(s.split()) for s in sentences)
         if 6 <= len(sentences) <= 10 and 70 <= words <= 140:
-            out.append({"item_id": f"e6-{len(out):03d}", "topic": topic, "persona": persona,
-                        "sentences": sentences, "model": model})
+            out.append(
+                {
+                    "item_id": f"e6-{len(out):03d}",
+                    "topic": topic,
+                    "persona": persona,
+                    "sentences": sentences,
+                    "model": model,
+                }
+            )
     return out
 
 
-def long_turn_rows(items: list[dict], tts: SpeechSynthesizer, voices: list[str],
-                   seed: int = 2026) -> list[dict]:
+def long_turn_rows(
+    items: list[dict], tts: SpeechSynthesizer, voices: list[str], seed: int = 2026
+) -> list[dict]:
     """One user voice per item (round-robin). Pauses between sentences are the
     backchannel opportunities; channel B is silent throughout."""
     speak = Speaker(tts)
@@ -421,9 +467,19 @@ def long_turn_rows(items: list[dict], tts: SpeechSynthesizer, voices: list[str],
         rid = f"{it['item_id']}-{voice}"
         rows.append(
             {
-                **_base_row(rid, "e6_long_turns", voice, a, b,
-                            {"topic": it["topic"], "persona": it["persona"],
-                             "sentences": it["sentences"], "text_model": it["model"]}),
+                **_base_row(
+                    rid,
+                    "e6_long_turns",
+                    voice,
+                    a,
+                    b,
+                    {
+                        "topic": it["topic"],
+                        "persona": it["persona"],
+                        "sentences": it["sentences"],
+                        "text_model": it["model"],
+                    },
+                ),
                 "turn_start_frame": _frame(lead),
                 "turn_end_frame": _frame_end(turn_end),
                 "pause_start_frames": [_frame(s) for s, _ in pauses],
@@ -436,12 +492,27 @@ def long_turn_rows(items: list[dict], tts: SpeechSynthesizer, voices: list[str],
 # -- writing ---------------------------------------------------------------------------
 
 _INT_FIELDS = {
-    "e2_single_turn": ["user_start_frame", "user_end_frame", "answer_start_frame",
-                       "answer_end_frame", "gap_ms"],
-    "e4_memory": ["distance", "correct_index", "stale_index", "question_end_frame",
-                  "answer_start_sample", "answer_start_frame"],
-    "e5_interruptions": ["assistant_start_frame", "interrupt_start_frame",
-                         "interrupt_end_frame", "assistant_end_frame"],
+    "e2_single_turn": [
+        "user_start_frame",
+        "user_end_frame",
+        "answer_start_frame",
+        "answer_end_frame",
+        "gap_ms",
+    ],
+    "e4_memory": [
+        "distance",
+        "correct_index",
+        "stale_index",
+        "question_end_frame",
+        "answer_start_sample",
+        "answer_start_frame",
+    ],
+    "e5_interruptions": [
+        "assistant_start_frame",
+        "interrupt_start_frame",
+        "interrupt_end_frame",
+        "assistant_end_frame",
+    ],
     "e6_long_turns": ["turn_start_frame", "turn_end_frame"],
 }
 
@@ -491,8 +562,10 @@ def write_suite(rows: list[dict], suite: str, out_dir: Path, shard_rows: int = 1
     n = (len(rows) + shard_rows - 1) // shard_rows
     for k in range(n):
         chunk = rows[k * shard_rows : (k + 1) * shard_rows]
-        pq.write_table(pa.Table.from_pylist(chunk, schema=schema),
-                       root / "data" / f"test-{k:05d}-of-{n:05d}.parquet")
+        pq.write_table(
+            pa.Table.from_pylist(chunk, schema=schema),
+            root / "data" / f"test-{k:05d}-of-{n:05d}.parquet",
+        )
     summary = {
         "suite": suite,
         "version": SUITES_VERSION,
@@ -502,7 +575,8 @@ def write_suite(rows: list[dict], suite: str, out_dir: Path, shard_rows: int = 1
     }
     if suite == "e4_memory":
         summary["by_distance_update"] = dict(
-            Counter(f"d{r['distance']}-{'u' if r['update'] else 'n'}" for r in rows))
+            Counter(f"d{r['distance']}-{'u' if r['update'] else 'n'}" for r in rows)
+        )
     if suite == "e5_interruptions":
         summary["by_condition"] = dict(Counter(r["condition"] for r in rows))
     (root / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
@@ -556,17 +630,25 @@ def bench_card(out_dir: Path, repo_id: str) -> str:
     present = {
         "e1_conversations": (out / "e1" / "data").exists(),
         "e1_labels": (out / "e1" / "labels").exists(),
-        **{s: (out / s / "data").exists() for s in
-           ("e2_single_turn", "e4_memory", "e5_interruptions", "e6_long_turns")},
+        **{
+            s: (out / s / "data").exists()
+            for s in ("e2_single_turn", "e4_memory", "e5_interruptions", "e6_long_turns")
+        },
     }
-    configs = ["  - config_name: default\n    data_files:\n      - split: test\n"
-               "        path: data/test-*.parquet"]
+    configs = [
+        "  - config_name: default\n    data_files:\n      - split: test\n"
+        "        path: data/test-*.parquet"
+    ]
     for name, (path, _) in SUITE_DOCS.items():
         if present[name]:
-            configs.append(f"  - config_name: {name}\n    data_files:\n      - split: test\n"
-                           f"        path: {path}")
-    rows = ["| `default` (E3 minimal pairs) | Two questions differing in one word or fact, two "
-            "matching answers; crossed forced choice. Chance 50%. |"]
+            configs.append(
+                f"  - config_name: {name}\n    data_files:\n      - split: test\n"
+                f"        path: {path}"
+            )
+    rows = [
+        "| `default` (E3 minimal pairs) | Two questions differing in one word or fact, two "
+        "matching answers; crossed forced choice. Chance 50%. |"
+    ]
     for name, (_, doc) in SUITE_DOCS.items():
         if present[name]:
             rows.append(f"| `{name}` | {doc} |")
@@ -595,8 +677,8 @@ configs:
 speech models trained on hohere corpora: channel A = user, channel B = assistant
 (`{MODEL_VOICE}`), 24 kHz mono, frame indices at 12.5 Hz (1920 samples per frame).
 
-User voices: {', '.join(EVAL_SEEN)} occur in hohere training corpora;
-{', '.join(EVAL_UNSEEN)} occur in none (`voice_a_seen_in_training`). Report results
+User voices: {", ".join(EVAL_SEEN)} occur in hohere training corpora;
+{", ".join(EVAL_UNSEEN)} occur in none (`voice_a_seen_in_training`). Report results
 separately for both groups.
 
 | Config | What it measures |

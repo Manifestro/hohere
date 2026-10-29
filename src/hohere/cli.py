@@ -372,6 +372,116 @@ def dialogues_texts(
     _print_counts("dialogue texts", result)
 
 
+librilight_app = typer.Typer(
+    help="Turn Libri-Light medium into Mimi token files (index, encode, finalize).",
+    no_args_is_help=True,
+)
+app.add_typer(librilight_app, name="librilight")
+
+
+def _json_list(path: Path | None) -> list:
+    return json.loads(path.read_text()) if path is not None else []
+
+
+@librilight_app.command("index")
+def librilight_index(
+    out: Annotated[Path, typer.Option("--out", help="Work directory for the index and plan.")],
+    url: Annotated[
+        str, typer.Option("--url", help="Archive URL (HTTPS with Range).")
+    ] = "https://dl.fbaipublicfiles.com/librilight/data/medium.tar",
+    parts: Annotated[int, typer.Option("--parts", min=1, help="Slices walked in parallel.")] = 512,
+    workers: Annotated[int, typer.Option("--workers", min=1, help="HTTP threads.")] = 64,
+    exclude_speakers: Annotated[
+        Path | None, typer.Option("--exclude-speakers", help="JSON list of speaker ids.")
+    ] = None,
+    exclude_recordings: Annotated[
+        Path | None,
+        typer.Option("--exclude-recordings", help="JSON list of \\[speaker, stem] pairs."),
+    ] = None,
+) -> None:
+    """Walk the tar over HTTP, pair files, segment them and write WORK/plan.jsonl."""
+    from hohere.librilight.index import run_index
+
+    summary = run_index(
+        out,
+        url,
+        parts,
+        workers,
+        _json_list(exclude_speakers),
+        _json_list(exclude_recordings),
+    )
+    _print_counts("libri-light index", summary)
+
+
+@librilight_app.command("encode")
+def librilight_encode(
+    plan: Annotated[Path, typer.Option("--plan", help="WORK/plan.jsonl.")],
+    part: Annotated[int, typer.Option("--part", min=0, help="Shard of this process.")],
+    parts: Annotated[int, typer.Option("--parts", min=1, help="Number of shards.")],
+    out: Annotated[Path, typer.Option("--out", help="WORK/part-K.")],
+    checkpoint: Annotated[
+        str, typer.Option("--checkpoint", help="Mimi safetensors: local path or repo/file.")
+    ] = "kyutai/moshiko-pytorch-bf16/tokenizer-e351c8d8-checkpoint125.safetensors",
+    batch_items: Annotated[int, typer.Option("--batch-items", min=1)] = 16,
+    max_padded_frames: Annotated[int, typer.Option("--max-padded-frames", min=1)] = 3000,
+    download_workers: Annotated[int, typer.Option("--download-workers", min=1)] = 4,
+    decode_workers: Annotated[int, typer.Option("--decode-workers", min=1)] = 12,
+    url: Annotated[
+        str, typer.Option("--url", help="Archive URL (HTTPS with Range).")
+    ] = "https://dl.fbaipublicfiles.com/librilight/data/medium.tar",
+) -> None:
+    """Encode this part's segments to Mimi tokens, one process per GPU."""
+    from hohere.librilight.encode import run_encode
+
+    result = run_encode(
+        plan=plan,
+        part=part,
+        parts=parts,
+        out=out,
+        checkpoint=checkpoint,
+        batch_items=batch_items,
+        max_padded_frames=max_padded_frames,
+        download_workers=download_workers,
+        decode_workers=decode_workers,
+        url=url,
+    )
+    _print_counts("libri-light encode", result)
+
+
+@librilight_app.command("finalize")
+def librilight_finalize(
+    work: Annotated[Path, typer.Option("--work", help="Work directory with part-*/done.")],
+    out: Annotated[Path | None, typer.Option("--out", help="Release dir (WORK/release).")] = None,
+    shard_bytes: Annotated[int, typer.Option("--shard-bytes", min=1)] = 1_000_000_000,
+    repo: Annotated[str | None, typer.Option("--repo", help="Dataset repo to upload to.")] = None,
+    split: Annotated[
+        str, typer.Option("--split", help="Folder and split name.")
+    ] = "librilight.medium",
+    private: Annotated[bool, typer.Option("--private/--public")] = True,
+    token_env: Annotated[
+        str, typer.Option("--token-env", help="Env var with the HF token.")
+    ] = "HF_TOKEN",
+    workers: Annotated[
+        int | None,
+        typer.Option("--workers", min=1, help="Processes checking token files (all cores)."),
+    ] = None,
+) -> None:
+    """Merge, check and pack the release (optionally upload it)."""
+    from hohere.librilight.finalize import run_finalize
+
+    result = run_finalize(
+        work,
+        out,
+        shard_bytes=shard_bytes,
+        split=split,
+        repo=repo,
+        private=private,
+        token_env=token_env,
+        workers=workers,
+    )
+    _print_counts("libri-light finalize", result["report"] | {"shards": result["shards"]})
+
+
 @app.command()
 def pipeline(
     config: ConfigOpt = Path("configs/default.yaml"),
@@ -415,9 +525,18 @@ def labels(
         stats = write_labels(rows, out, {"output_dir": str(cfg.dataset.output_dir)})
         result = {"conversations": len(rows), "out": str(out)}
     _print_counts("labels", result)
-    console.print_json(data={k: stats[k] for k in (
-        "counts", "backchannel_share_assistant", "interruption_share_user_interrupts", "gap_ms",
-        "yield_ms")})
+    console.print_json(
+        data={
+            k: stats[k]
+            for k in (
+                "counts",
+                "backchannel_share_assistant",
+                "interruption_share_user_interrupts",
+                "gap_ms",
+                "yield_ms",
+            )
+        }
+    )
 
 
 @app.command()

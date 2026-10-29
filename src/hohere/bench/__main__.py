@@ -54,8 +54,12 @@ def publish(
     if not api.repo_info(repo_id, repo_type="dataset").private:
         console.print(f"[red]{repo_id} is public; refusing to upload[/]")
         raise typer.Exit(1)
-    api.upload_folder(folder_path=str(out), repo_id=repo_id, repo_type="dataset",
-                      commit_message="hohere-bench release")
+    api.upload_folder(
+        folder_path=str(out),
+        repo_id=repo_id,
+        repo_type="dataset",
+        commit_message="hohere-bench release",
+    )
     if tag:
         api.create_tag(repo_id, tag=tag, repo_type="dataset", tag_message=f"Release {tag}")
     console.print(f"published {repo_id} (private){f', tag {tag}' if tag else ''}")
@@ -127,8 +131,9 @@ def e6(
     items = long_turn_texts(
         cfg.dialogue, cfg.dataset.topics, cfg.dialogue.user_personas or USER_PERSONAS, n
     )
-    console.print(write_suite(long_turn_rows(items, _tts(provider), EVAL_VOICES),
-                              "e6_long_turns", out))
+    console.print(
+        write_suite(long_turn_rows(items, _tts(provider), EVAL_VOICES), "e6_long_turns", out)
+    )
 
 
 @app.command()
