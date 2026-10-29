@@ -162,7 +162,7 @@ def segment(
         # still fits, otherwise drop it.
         start, end = spans[current[0]][0], spans[current[-1]][1]
         tail = [iv for i in current for iv in groups[i]]
-        if candidates and candidates[-1].clean_start and end - candidates[-1].start <= cfg.max_len:
+        if candidates and not dirty and end - candidates[-1].start <= cfg.max_len:
             prev = candidates.pop()
             candidates.append(_Candidate(prev.start, end, prev.intervals + tail, prev.clean_start))
         current = []

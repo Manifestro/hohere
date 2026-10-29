@@ -74,6 +74,12 @@ def test_rule5_short_tail_is_dropped_when_merging_breaks_a_limit() -> None:
     assert spans(segment(not_adjacent, 80.0)) == [(0.5, 9.5)]
 
 
+def test_rule5_adjacency_ignores_what_came_before_the_previous_segment() -> None:
+    # A dropped run before the previous segment must not stop the tail from merging.
+    vad = [(0.5, 32.0), (40.0, 43.0), (43.5, 47.0), (50.0, 52.0)]
+    assert spans(segment(vad, 60.0)) == [(39.5, 52.5)]
+
+
 def test_rule6_a_segment_needs_a_pause_away_from_its_edges() -> None:
     assert segment([(1.0, 20.0)], 40.0) == []  # continuous speech, no internal pause
     too_early = [(1.0, 2.0), (2.5, 20.0)]  # the gap starts 1.5 s in, min_a is 3
