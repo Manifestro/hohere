@@ -26,3 +26,4 @@ exports/
 .DS_Store
 .idea/
 .vscode/
+.kap/
