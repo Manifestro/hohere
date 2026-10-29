@@ -32,6 +32,11 @@ kokoro = [
 serve = [
     "vllm==0.32.0; sys_platform == 'linux'",
 ]
+# Mimi encoding for the Libri-Light pipeline; needs torch 2.8 and ffmpeg on the GPU pod.
+librilight = [
+    "moshi>=0.2.13",
+    "huggingface-hub>=0.25",
+]
 # Hugging Face export and publishing.
 hf = [
     "datasets>=3.0",
@@ -51,6 +56,11 @@ dev = [
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv]
+# `serve` (vLLM) and `librilight` (moshi) pin different torch versions, so they are
+# never installed into the same environment; uv resolves the two forks separately.
+conflicts = [[{ extra = "serve" }, { extra = "librilight" }]]
 
 [tool.ruff]
 line-length = 100

@@ -623,5 +623,10 @@ def hub_labels(
                 labels_row(r["id"], r["skill"], events, r["duration_samples"], r["sample_rate"])
             )
     stats = write_labels(rows, out, {"repo_id": repo_id, "revision": revision})
-    return {"repo_id": repo_id, "revision": revision, "conversations": len(rows),
-            "out": str(out), "stats": stats}
+    return {
+        "repo_id": repo_id,
+        "revision": revision,
+        "conversations": len(rows),
+        "out": str(out),
+        "stats": stats,
+    }

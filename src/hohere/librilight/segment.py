@@ -49,7 +49,6 @@ class _Candidate:
     start: float
     end: float
     intervals: list[Bounds]
-    clean_start: bool  # nothing was discarded between the previous segment and this one
 
 
 def merge_intervals(voice_activity: Iterable[Bounds], duration: float) -> list[Bounds]:
@@ -135,7 +134,7 @@ def segment(
         start, end = spans[current[0]][0], spans[current[-1]][1]
         if end - start >= cfg.min_len:
             intervals = [iv for i in current for iv in groups[i]]
-            candidates.append(_Candidate(start, end, intervals, not dirty))
+            candidates.append(_Candidate(start, end, intervals))
             dirty = False
         else:
             dirty = True
@@ -164,7 +163,7 @@ def segment(
         tail = [iv for i in current for iv in groups[i]]
         if candidates and not dirty and end - candidates[-1].start <= cfg.max_len:
             prev = candidates.pop()
-            candidates.append(_Candidate(prev.start, end, prev.intervals + tail, prev.clean_start))
+            candidates.append(_Candidate(prev.start, end, prev.intervals + tail))
         current = []
 
     return [Segment(c.start, c.end) for c in candidates if _has_internal_pause(c, cfg)]

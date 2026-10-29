@@ -120,16 +120,22 @@ def test_memory_rows_layout(tmp_path):
         assert not np.any(b[r["answer_start_sample"] :])  # answer slot is empty
         for i in range(4):
             assert len(_audio(r[f"candidate_{i}_audio"])) > 0
-        assert r["answer_start_sample"] + max(
-            len(_audio(r[f"candidate_{i}_audio"])) for i in range(4)
-        ) <= r["total_samples"]
+        assert (
+            r["answer_start_sample"] + max(len(_audio(r[f"candidate_{i}_audio"])) for i in range(4))
+            <= r["total_samples"]
+        )
     write_suite(rows, "e4_memory", tmp_path)
 
 
 def test_long_turns_and_card(tmp_path):
     items = [
-        {"item_id": f"e6-{k:03d}", "topic": "t", "persona": "p", "model": "m",
-         "sentences": [f"This is sentence number {i} of a fairly long story." for i in range(8)]}
+        {
+            "item_id": f"e6-{k:03d}",
+            "topic": "t",
+            "persona": "p",
+            "model": "m",
+            "sentences": [f"This is sentence number {i} of a fairly long story." for i in range(8)],
+        }
         for k in range(3)
     ]
     rows = long_turn_rows(items, MockSynthesizer(24000), EVAL_SEEN + EVAL_UNSEEN)

@@ -177,7 +177,7 @@ configs:
         path: data/test-*.parquet
 ---
 
-# hohere-bench v{s['version']}
+# hohere-bench v{s["version"]}
 
 **Evaluation only. Never train on this set.** It checks whether a full-duplex speech model
 answers *what the user said* or just produces assistant-sounding speech.
@@ -188,18 +188,18 @@ than after question **y**.
 
 | | |
 |---|---:|
-| Pairs | {s['pairs']} |
-| Rows (pair × user voice) | {s['rows']} |
-| User voices (channel A) | {', '.join(s['voices_a'])} |
+| Pairs | {s["pairs"]} |
+| Rows (pair × user voice) | {s["rows"]} |
+| User voices (channel A) | {", ".join(s["voices_a"])} |
 | Assistant voice (channel B) | {MODEL_VOICE} |
 | Audio | 24 kHz mono clips, PCM16 |
 
-- **echo** ({s['pairs_by_kind'].get('echo', 0)} pairs): the answer repeats the differing word
+- **echo** ({s["pairs_by_kind"].get("echo", 0)} pairs): the answer repeats the differing word
   ("Can you find the red mug?" → "The red mug is on the top shelf.").
-- **infer** ({s['pairs_by_kind'].get('infer', 0)} pairs): the answer follows from the meaning
+- **infer** ({s["pairs_by_kind"].get("infer", 0)} pairs): the answer follows from the meaning
   without repeating it ("It's pouring outside…" → "Yes, take the umbrella…").
-- `voice_a_seen_in_training`: {', '.join(SEEN_VOICES)} are hohere training voices,
-  {', '.join(UNSEEN_VOICES)} never appear in hohere data.
+- `voice_a_seen_in_training`: {", ".join(SEEN_VOICES)} are hohere training voices,
+  {", ".join(UNSEEN_VOICES)} never appear in hohere data.
 
 | Category | Pairs |
 |---|---:|
