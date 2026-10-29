@@ -214,7 +214,7 @@ def load_mimi(checkpoint: Path, device: str):
 
 def check_silence(mimi, device: str) -> None:
     """Refuse to run if Mimi no longer maps digital silence to `SILENCE_CODES`."""
-    codes = encode_batch(mimi, [np.zeros(SAMPLE_RATE, np.float32)], device)[0]
+    codes = encode_batch(mimi, [np.zeros(FRAME_SAMPLES, np.float32)], device)[0]
     if not is_silence(codes):
         raise RuntimeError(
             f"Mimi encodes silence to {codes[:, 0].tolist()}, expected {list(SILENCE_CODES)}"
