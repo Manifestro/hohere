@@ -1,5 +1,7 @@
 # hohere
 
+**English** | [Русский](README.ru.md)
+
 Toolkit for generating, synthesizing, validating and publishing **synchronized two-channel
 conversational audio datasets** for full-duplex spoken dialogue models.
 
