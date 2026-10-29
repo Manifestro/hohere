@@ -41,7 +41,7 @@ def test_build_turns_meta_into_segments() -> None:
     entry = plan_file("0007")
     assert (entry.chapter, entry.flac_offset, entry.flac_size) == ("book_01_a", 1024, 1000)
     assert entry.segments == ((0.5, 14.5),)
-    assert entry.source == "medium/0007/book-01/a.flac"
+    assert entry.archive_path == "medium/0007/book-01/a.flac"
     assert entry.key == (7, "book_01_a")
 
 

@@ -37,8 +37,8 @@ class PlanFile:
         return int(self.speaker), self.chapter
 
     @property
-    def source(self) -> str:
-        """The archive path of the FLAC this file was cut from."""
+    def archive_path(self) -> str:
+        """The path of the FLAC inside the tar this file was cut from."""
         return f"medium/{self.speaker}/{self.book_dir}/{self.stem}.flac"
 
     def line(self) -> dict:

@@ -41,8 +41,10 @@ wait
 `assign_parts` gives a whole speaker to exactly one part, so nobody downloads a FLAC
 twice. Downloads, `ffmpeg` and Mimi form a bounded pipeline (at most 8 files in memory),
 segments are batched across files by length (16 items, 3000 padded frames by default),
-and each file is written atomically as soon as all of its segments are encoded.
-`WORK/part-K/done/<chapter>.json` is the resume marker: restart the same command after a
+and a finished file is handed to a pool of 8 writer threads, so the GPU never waits for a
+`torch.save`. Token files are renamed into place without an fsync;
+`WORK/part-K/done/<chapter>.json` is written — and fsynced — only once every token file
+of that chapter is on disk. It is the resume marker: restart the same command after a
 crash and finished files are skipped. One JSON progress line goes to stdout every 30 s.
 
 Mimi is checked at start-up: digital silence must encode to

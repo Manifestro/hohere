@@ -3,8 +3,9 @@
 Downloads, ffmpeg and Mimi form a pipeline of bounded queues: at most `ahead` FLAC
 files are in memory, segments are batched across files by length (at most
 `batch_items` items and `max_padded_frames` padded frames, so a batch of 15 s items
-fits the 5.6 GB of a 4090), and each file is written as soon as all of its segments are
-encoded. A `done/<chapter>.json` marker makes the run resumable at file granularity.
+fits the 5.6 GB of a 4090), and each file is written on a writer thread as soon as all
+of its segments are encoded, so the GPU never waits for a `torch.save`. A
+`done/<chapter>.json` marker makes the run resumable at file granularity.
 """
 
 from __future__ import annotations
@@ -17,11 +18,13 @@ import subprocess
 import sys
 import time
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
+from threading import Lock
 
 import numpy as np
 
@@ -63,6 +66,7 @@ DATASET_CONFIG = "medium"
 DATASET_SPLIT = "librilight.medium"
 SKILL = "single_speech"
 PROGRESS_EVERY = 30.0
+WRITE_WORKERS = 8
 
 
 @dataclass(frozen=True)
@@ -105,10 +109,14 @@ def tokens(codes: np.ndarray, act: np.ndarray, side: str) -> dict:
     }
 
 
+def source_name(side: str) -> str:
+    """`source` of a manifest line: which channel of the `.pt` carries the speech."""
+    return f"1a_on_{side}"
+
+
 def manifest_line(
     *,
     id: str,
-    source: str,
     speaker: str,
     frames: int,
     sha256: str,
@@ -116,10 +124,15 @@ def manifest_line(
     start: float,
     end: float,
 ) -> dict:
-    """One manifest line; keys are fixed by the dataset schema."""
+    """One manifest line; keys are fixed by the dataset schema.
+
+    `source` names the layout of the token file rather than the archive it came from:
+    the speech sits on the A or the B channel, which `channel` picks from the id, so
+    the line cannot name a layout the `.pt` does not have.
+    """
     return {
         "id": id,
-        "source": source,
+        "source": source_name(channel(id)),
         "skill": SKILL,
         "family": f"librilight/{speaker}",
         "user_voice": speaker,
@@ -221,10 +234,12 @@ def decode_flac(data: bytes) -> np.ndarray:
 
 
 def save_tokens(path: Path, payload: dict) -> str:
-    """`torch.save` atomically (tmp + fsync + rename); returns the sha256 of the file.
+    """`torch.save` atomically (tmp + rename); returns the sha256 of the file.
 
     The numpy arrays of `tokens` become tensors here, so the file is a plain
-    `{name: tensor}` dict that `torch.load(weights_only=True)` can read back.
+    `{name: tensor}` dict that `torch.load(weights_only=True)` can read back. There is
+    no fsync: the `done/` marker is the durable record, and a `.pt` that does not
+    survive a crash is encoded again on the next run.
     """
     import torch
 
@@ -235,10 +250,109 @@ def save_tokens(path: Path, payload: dict) -> str:
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "wb") as f:
         torch.save(tensors, f)
-        f.flush()
-        os.fsync(f.fileno())
     tmp.replace(path)
     return sha256_file(path)
+
+
+def write_file(
+    file: PlanFile,
+    payloads: dict[int, tuple[np.ndarray, np.ndarray]],
+    *,
+    tokens_dir: Path,
+    done_dir: Path,
+    codec_sha256: str,
+    save: Callable[[Path, dict], str] = save_tokens,
+) -> list[dict]:
+    """Save every token file of one source file, then its `done/<chapter>.json` marker.
+
+    The marker is the resume point and is written last and fsynced, so a chapter is
+    either complete on disk or redone. Runs on a writer thread.
+    """
+    lines = []
+    for number, seg_index in numbering(payloads):
+        codes, act = payloads[seg_index]
+        start, end = file.segments[seg_index]
+        sid = segment_id(file.speaker, file.chapter, number)
+        digest = save(tokens_dir / f"{sid}.pt", tokens(codes, act, channel(sid)))
+        lines.append(
+            manifest_line(
+                id=sid,
+                speaker=file.speaker,
+                frames=int(codes.shape[1]),
+                sha256=digest,
+                codec_sha256=codec_sha256,
+                start=start,
+                end=end,
+            )
+        )
+    marker = done_dir / f"{file.chapter}.json"
+    tmp = marker.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        f.write(json.dumps(lines))
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.replace(marker)
+    return lines
+
+
+class Writers:
+    """Token writing on `workers` threads, with at most `pending` files in the queue.
+
+    Mimi encodes ~2600x real time, so a few hundred kilobytes per segment cannot be
+    written on the thread that feeds the GPU: `submit` hands the job over and blocks
+    only once `pending` writes are in flight, which bounds memory. A failed write is
+    re-raised by `submit`, `wait` or `close`, so a full disk stops the run instead of
+    leaving holes in the release.
+    """
+
+    def __init__(self, workers: int = WRITE_WORKERS, pending: int | None = None) -> None:
+        self.workers = max(1, workers)
+        self.limit = max(1, pending if pending is not None else 2 * self.workers)
+        self.pool = ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="write")
+        self.pending: set[Future] = set()
+        self.lock = Lock()
+        self.done = 0
+
+    def __enter__(self) -> Writers:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if exc is None:
+            self.close()
+        else:  # a failing run cancels what has not started and keeps its first error
+            self.pool.shutdown(wait=True, cancel_futures=True)
+
+    def submit(self, job: Callable[[], object]) -> None:
+        """Queue `job`; a finished failure stops the run, a full queue waits for a slot."""
+        finished = [future for future in self.pending if future.done()]
+        if finished:
+            self._harvest(finished)
+        if len(self.pending) >= self.limit:
+            self._harvest(wait_futures(self.pending, return_when=FIRST_COMPLETED).done)
+        self.pending.add(self.pool.submit(self._run, job))
+
+    def wait(self) -> None:
+        """Block until every queued write is on disk; re-raise the first failure."""
+        while self.pending:
+            self._harvest(wait_futures(self.pending, return_when=FIRST_COMPLETED).done)
+
+    def close(self) -> None:
+        self.wait()
+        self.pool.shutdown(wait=True)
+
+    def _run(self, job: Callable[[], object]) -> None:
+        job()
+        with self.lock:
+            self.done += 1
+
+    def _harvest(self, finished: Iterable[Future]) -> None:
+        error: BaseException | None = None
+        for future in finished:
+            self.pending.discard(future)
+            if error is None:
+                error = future.exception()
+        if error is not None:
+            raise error
 
 
 def _decoded(
@@ -330,6 +444,7 @@ def run_encode(
     max_padded_frames: int = 3000,
     download_workers: int = 4,
     decode_workers: int = 12,
+    write_workers: int = WRITE_WORKERS,
     url: str = DEFAULT_URL,
     device: str = "cuda",
 ) -> dict:
@@ -360,36 +475,24 @@ def run_encode(
     items: list[_Item] = []
     encoded = 0
 
-    def write_file(file: PlanFile, payloads: dict[int, tuple[np.ndarray, np.ndarray]]) -> None:
-        lines = []
-        for number, seg_index in numbering(payloads):
-            codes, act = payloads[seg_index]
-            start, end = file.segments[seg_index]
-            sid = segment_id(file.speaker, file.chapter, number)
-            digest = save_tokens(tokens_dir / f"{sid}.pt", tokens(codes, act, channel(sid)))
-            lines.append(
-                manifest_line(
-                    id=sid,
-                    source=file.source,
-                    speaker=file.speaker,
-                    frames=int(codes.shape[1]),
-                    sha256=digest,
-                    codec_sha256=codec_sha,
-                    start=start,
-                    end=end,
-                )
+    def write(file: PlanFile, payloads: dict[int, tuple[np.ndarray, np.ndarray]]) -> None:
+        """Hand one file to the writer threads: its `.pt` files, then its marker."""
+        writers.submit(
+            partial(
+                write_file,
+                file,
+                payloads,
+                tokens_dir=tokens_dir,
+                done_dir=done_dir,
+                codec_sha256=codec_sha,
             )
-        marker = done_dir / f"{file.chapter}.json"
-        tmp = marker.with_suffix(".tmp")
-        tmp.write_text(json.dumps(lines))
-        tmp.replace(marker)
-        progress.done += 1
+        )
 
     def drain() -> None:
         for index in [i for i, left in expected.items() if left == 0]:
-            write_file(planned[index], held.pop(index))
+            payloads = held.pop(index)
             expected.pop(index)
-            planned.pop(index)
+            write(planned.pop(index), payloads)
 
     def flush() -> None:
         nonlocal items, encoded
@@ -407,30 +510,34 @@ def run_encode(
         drain()
 
     reader = RangeReader(url)
-    for index, file, audio in _decoded(todo, reader, download_workers, decode_workers):
-        planned[index] = file
-        kept = 0
-        for seg_index, (start, end) in enumerate(file.segments):
-            clip = cut(audio, start, end)
-            act = activity(clip)
-            if not act.any():
-                dropped["silent"] += 1
-                continue
-            if not has_pause(act):
-                dropped["no_pause"] += 1
-                continue
-            items.append(_Item(index, seg_index, clip, act))
-            kept += 1
-            seconds += end - start
-        expected[index] = kept
-        if kept == 0:
-            write_file(file, {})
-            expected.pop(index)
-            planned.pop(index)
-        if len(items) >= window:
-            flush()
-        progress.tick(encoded, seconds, dropped)
-    flush()
+    with Writers(write_workers) as writers:
+        for index, file, audio in _decoded(todo, reader, download_workers, decode_workers):
+            planned[index] = file
+            kept = 0
+            for seg_index, (start, end) in enumerate(file.segments):
+                clip = cut(audio, start, end)
+                act = activity(clip)
+                if not act.any():
+                    dropped["silent"] += 1
+                    continue
+                if not has_pause(act):
+                    dropped["no_pause"] += 1
+                    continue
+                items.append(_Item(index, seg_index, clip, act))
+                kept += 1
+                seconds += end - start
+            expected[index] = kept
+            if kept == 0:
+                expected.pop(index)
+                planned.pop(index)
+                write(file, {})
+            if len(items) >= window:
+                flush()
+            progress.done = skipped + writers.done
+            progress.tick(encoded, seconds, dropped)
+        flush()
+        writers.wait()  # every token file and marker is on disk before the next stage
+    progress.done = skipped + writers.done
     progress.tick(encoded, seconds, dropped, force=True)
     log.info("part %d/%d: %d files, %d segments", part, parts, progress.done, encoded)
     return {

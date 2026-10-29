@@ -10,6 +10,7 @@ import pytest
 from hohere.librilight.encode import manifest_line
 from hohere.librilight.finalize import (
     Entry,
+    chapter_stems,
     check,
     merge,
     pack_shards,
@@ -18,7 +19,8 @@ from hohere.librilight.finalize import (
     silence_codes,
     upload,
 )
-from hohere.librilight.ids import segment_id
+from hohere.librilight.ids import chapter_id, segment_id
+from hohere.librilight.plan import PlanFile, write_plan
 
 CODEC = "cd" * 32
 
@@ -26,13 +28,26 @@ CODEC = "cd" * 32
 def line(speaker: str, chapter: str, index: int, frames: int = 100) -> dict:
     return manifest_line(
         id=segment_id(speaker, chapter, index),
-        source=f"medium/{speaker}/{chapter.split('_')[0]}/{chapter}.flac",
         speaker=speaker,
         frames=frames,
         sha256="00" * 32,
         codec_sha256=CODEC,
         start=0.0,
         end=frames / 12.5,
+    )
+
+
+def plan_file(speaker: str, stem: str) -> PlanFile:
+    return PlanFile(
+        speaker=speaker,
+        book_dir="book-01",
+        stem=stem,
+        chapter=chapter_id("book-01", stem),
+        flac_offset=1024,
+        flac_size=1000,
+        duration=20.0,
+        snr=12.5,
+        segments=((0.5, 14.5),),
     )
 
 
@@ -98,11 +113,31 @@ def test_check_reports_duplicate_ids_bad_indices_and_missing_files(tmp_path: Pat
 def test_check_reports_excluded_speakers_and_recordings(tmp_path: Path) -> None:
     work = make_work(tmp_path, {0: [line("0064", "book_01_a", 0)]})
     report = check(
-        merge(work), exclude_speakers=["0064"], exclude_recordings=[["0064", "book_01_a"]]
+        merge(work),
+        exclude_speakers=["0064"],
+        exclude_recordings=[["0064", "a"]],
+        stems={"0064-book_01_a": {"a"}},
     )
     problems = "\n".join(report["problems"])
     assert "excluded speaker 0064" in problems
-    assert "excluded recording book_01_a" in problems
+    assert "excluded recording a in 0064-book_01_a-0" in problems
+
+
+def test_chapter_stems_reads_the_plan(tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    files = [plan_file("0007", "a"), plan_file("0008", "b")]
+    write_plan(work / "plan.jsonl", files)
+    assert chapter_stems(work) == {"0007-book_01_a": {"a"}, "0008-book_01_b": {"b"}}
+    assert chapter_stems(tmp_path / "missing") == {}
+
+
+def test_run_finalize_looks_recordings_up_in_the_plan(tmp_path: Path) -> None:
+    work = make_work(tmp_path / "work", {0: [line("0007", "book_01_a", 0)]})
+    write_plan(work / "plan.jsonl", [plan_file("0007", "a")])
+    (work / "index_summary.json").write_text(json.dumps({"exclude_recordings": [["0007", "a"]]}))
+    with pytest.raises(RuntimeError, match="excluded recording a"):
+        run_finalize(work, check_tensor=False)
 
 
 def test_pack_shards_keeps_manifest_order_and_shard_size(tmp_path: Path) -> None:

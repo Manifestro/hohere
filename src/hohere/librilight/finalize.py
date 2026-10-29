@@ -15,12 +15,13 @@ import os
 import tarfile
 import time
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from hohere.librilight.activity import FRAME_SAMPLES, SAMPLE_RATE, SILENCE_CODES
 from hohere.librilight.ids import parse_segment_id
+from hohere.librilight.plan import read_plan
 from hohere.storage.manifest import sha256_file
 
 log = logging.getLogger(__name__)
@@ -90,11 +91,27 @@ def _check_ids(entries: Sequence[Entry], problems: list[str]) -> dict[str, list[
     return by_chapter
 
 
+def chapter_stems(work: Path) -> dict[str, set[str]]:
+    """`<speaker>-<chapter> -> {stem}` from `WORK/plan.jsonl`; a missing plan is empty.
+
+    A manifest line names the layout of its `.pt` (`source`) rather than the recording
+    it came from, so the stems of an excluded recording can only come from the plan.
+    """
+    path = work / "plan.jsonl"
+    if not path.exists():
+        return {}
+    stems: dict[str, set[str]] = defaultdict(set)
+    for file in read_plan(path):
+        stems[f"{file.speaker}-{file.chapter}"].add(file.stem)
+    return dict(stems)
+
+
 def _check_sources(
     entries: Sequence[Entry],
     problems: list[str],
     exclude_speakers: Iterable[str],
     exclude_recordings: Iterable[Iterable[str]],
+    stems: Mapping[str, Collection[str]],
 ) -> None:
     speakers = {str(s) for s in exclude_speakers}
     recordings = {(str(s), str(t)) for s, t in exclude_recordings}
@@ -102,9 +119,11 @@ def _check_sources(
         line = entry.line
         if line["user_voice"] in speakers:
             problems.append(f"excluded speaker {line['user_voice']} in {line['id']}")
-        stem = Path(line["source"]).name.rpartition(".")[0]
-        if (line["user_voice"], stem) in recordings:
-            problems.append(f"excluded recording {stem} in {line['id']}")
+        chapter = line["id"].rsplit("-", 1)[0]
+        for stem in stems.get(chapter, ()):
+            if (line["user_voice"], stem) in recordings:
+                problems.append(f"excluded recording {stem} in {line['id']}")
+                break
 
 
 def check_tokens(entry: Entry, problems: list[str]) -> None:
@@ -146,12 +165,17 @@ def check(
     entries: Sequence[Entry],
     exclude_speakers: Iterable[str] = (),
     exclude_recordings: Iterable[Iterable[str]] = (),
+    stems: Mapping[str, Collection[str]] | None = None,
     check_tensor: bool = True,
 ) -> dict:
-    """The acceptance report: `ok`, `problems` and the release statistics."""
+    """The acceptance report: `ok`, `problems` and the release statistics.
+
+    `stems` maps an id without its index to the `stem` of its recording, which is how
+    an excluded recording is spotted; see `chapter_stems`.
+    """
     problems: list[str] = []
     chapters = _check_ids(entries, problems)
-    _check_sources(entries, problems, exclude_speakers, exclude_recordings)
+    _check_sources(entries, problems, exclude_speakers, exclude_recordings, stems or {})
     missing_files = 0
     frames = 0
     skipped_tensors = 0
@@ -315,6 +339,7 @@ def run_finalize(
         entries,
         exclude_speakers=summary.get("exclude_speakers", ()),
         exclude_recordings=summary.get("exclude_recordings", ()),
+        stems=chapter_stems(work),
         check_tensor=check_tensor,
     )
     out.mkdir(parents=True, exist_ok=True)
