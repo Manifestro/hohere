@@ -65,34 +65,31 @@ def embed(
     directory.mkdir(parents=True, exist_ok=True)
     index_path = directory / "index.jsonl"
     progress = progress or Progress()
-    parts = sorted(p for p in directory.glob("part-*.npy"))
-    done = {p.name for p in parts}
-    written = len(done)
+    files_path = directory / "files.txt"  # files covered by finished parts, for resuming
+    finished = set(files_path.read_text().split()) if files_path.exists() else set()
+    written = len(list(directory.glob("part-*.npy")))
     units_total = 0
     with index_path.open("a", encoding="utf-8") as index_handle:
         buffer: list[np.ndarray] = []
         pending: list[dict[str, Any]] = []
-        part = 0
+        part_ids: list[str] = []
+        part = written
 
         def flush() -> None:
-            nonlocal buffer, pending, written, part
-            if not buffer:
-                return
-            name = part_name(part)
-            if name not in done:
-                np.save(directory / name, np.concatenate(buffer).astype(EMB_DTYPE))
+            nonlocal buffer, pending, part_ids, written, part
+            if buffer:
+                np.save(directory / part_name(part), np.concatenate(buffer).astype(EMB_DTYPE))
                 for row in pending:
                     index_handle.write(json.dumps(row, sort_keys=True) + "\n")
                 index_handle.flush()
-                done.add(name)
                 written += 1
-            part += 1
-            buffer, pending = [], []
+                part += 1
+            with files_path.open("a", encoding="utf-8") as handle:
+                handle.writelines(f"{file_id}\n" for file_id in part_ids)
+            buffer, pending, part_ids = [], [], []
 
         for count, file in enumerate(files):
-            name = part_name(part)
-            if name in done and count < len(files):  # skip what a previous run wrote
-                part += 1
+            if file.file_id in finished:  # a previous run wrote this file's part
                 continue
             raw = stages.download(file)
             wav = stages.decode(raw, file)
@@ -115,12 +112,11 @@ def embed(
                     )
                 units_total += len(segments)
                 progress.done_chunk((end_s - start_s) / 3600.0)
+            part_ids.append(file.file_id)
             if (count + 1) % part_files == 0 or units_total >= max_units_per_part:
                 flush()
                 units_total = 0
         flush()
-        if index_path.exists() and index_path.stat().st_size and not done:
-            index_handle.write("")
     return {
         "parts": written,
         "files": len(files),

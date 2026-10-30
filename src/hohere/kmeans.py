@@ -137,7 +137,7 @@ def fit(
         counts = torch.zeros(k, dtype=torch.float32, device=centroids.device)
         sums.index_add_(0, ids, points)
         counts.index_add_(0, ids, torch.ones_like(scores))
-        empty = torch.flatnonzero(counts == 0)
+        empty = (counts == 0).nonzero(as_tuple=True)[0]
         sums[empty] = points[torch.randint(points.shape[0], (int(empty.numel()),),
                                            generator=generator).to(points.device)]
         counts[empty] = 1.0
