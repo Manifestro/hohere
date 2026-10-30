@@ -272,7 +272,7 @@ def load_encoder(
     """Load the frozen WavLM-Large checkpoint onto `device`."""
     import torch
 
-    from .vendor.wavlm import WavLM, WavLMConfig
+    from .vendor.wavlm.WavLM import WavLM, WavLMConfig
 
     if dtype not in DTYPES:
         raise ValueError(f"unknown wavlm dtype {dtype!r}, expected one of {DTYPES}")
