@@ -65,7 +65,7 @@ class Stages:
     mimi_batch: int = 16
     # several chunks of similar length at once; without it `encode_units` runs per chunk
     encode_units_batch: Callable[[list[np.ndarray], list[list]], list] | None = None
-    wavlm_batch: int = 8
+    wavlm_batch: int = 4
     # optional: fraction of boundaries that agree with a float32 reference
     agreement: Callable[[np.ndarray, list[tuple[int, int]]], float] | None = None
 
@@ -566,7 +566,7 @@ def real_stages(
     wavlm_dtype: str = "float32",
     units_dir: str = "work/units",
     mimi_batch: int = 16,
-    wavlm_batch: int = 8,
+    wavlm_batch: int = 4,
     vad_workers: int = 8,
     load_codebooks: bool = True,
 ) -> Stages:

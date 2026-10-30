@@ -280,7 +280,7 @@ def run(
     download_workers: int = typer.Option(8, "--download-workers"),
     decode_workers: int = typer.Option(4, "--decode-workers"),
     mimi_batch: int = typer.Option(16, "--mimi-batch"),
-    wavlm_batch: int = typer.Option(8, "--wavlm-batch"),
+    wavlm_batch: int = typer.Option(4, "--wavlm-batch"),
     vad_workers: int | None = typer.Option(
         None, "--vad-workers", help="Silero processes [default: 8, on cpu a quarter of the cores]"
     ),

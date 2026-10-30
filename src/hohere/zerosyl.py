@@ -292,10 +292,25 @@ class Encoder:
     def encode_batch(
         self, wavs: list[np.ndarray], speech_spans: list[list[vad.Span]]
     ) -> list[Segments]:
-        """`encode` for several chunks at once."""
+        """`encode` for several chunks at once; a batch too big for the GPU is split in two."""
+        import torch
+
+        try:
+            features = self.forward_batch(wavs)
+        except torch.cuda.OutOfMemoryError:
+            if len(wavs) == 1:
+                raise
+            features = None
+        if features is None:  # out of the except block: its traceback pins the tensors
+            torch.cuda.empty_cache()
+            middle = len(wavs) // 2
+            return [
+                *self.encode_batch(wavs[:middle], speech_spans[:middle]),
+                *self.encode_batch(wavs[middle:], speech_spans[middle:]),
+            ]
         return [
             segment_features(first, second, vad.speech_mask50(spans, first.shape[0]))
-            for (first, second), spans in zip(self.forward_batch(wavs), speech_spans, strict=True)
+            for (first, second), spans in zip(features, speech_spans, strict=True)
         ]
 
     def encode(self, wav16: np.ndarray, speech_spans: list[vad.Span] | None = None) -> Segments:
