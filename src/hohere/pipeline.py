@@ -50,6 +50,7 @@ QUEUE_CHUNKS = 32  # chunks in flight: decode -> model
 QUEUE_RECORDS = 32  # records in flight: model -> writer
 QUEUE_SHARDS = 2  # closed shards waiting for upload
 BUFFER_BATCHES = 4  # chunks gathered per flush, in batches
+WAVLM_BATCH_SECONDS = 240  # a batch's padded audio; the memory of WavLM follows it
 
 
 @dataclass
@@ -62,10 +63,11 @@ class Stages:
     encode_units: Callable[[np.ndarray, list[tuple[int, int]]], Any]
     encode_mimi: Callable[[list[np.ndarray]], list[np.ndarray]]
     assign: Callable[[np.ndarray, int], np.ndarray]
-    mimi_batch: int = 16
+    mimi_batch: int = 8
     # several chunks of similar length at once; without it `encode_units` runs per chunk
     encode_units_batch: Callable[[list[np.ndarray], list[list]], list] | None = None
-    wavlm_batch: int = 4
+    wavlm_batch: int = 8
+    wavlm_max_s: float = 20.0  # longest WavLM input, where the pauses allow it
     # optional: fraction of boundaries that agree with a float32 reference
     agreement: Callable[[np.ndarray, list[tuple[int, int]]], float] | None = None
 
@@ -74,17 +76,37 @@ class Stages:
 
 
 def encode_many(stages: Stages, wavs: list[np.ndarray], spans: list[list]) -> list:
-    """Units of many chunks, batched by similar length; results keep the input order."""
+    """Units of many chunks; results keep the input order.
+
+    Each chunk is cut at its pauses into pieces of at most `wavlm_max_s`, and the pieces of
+    all chunks are batched by similar length, so a batch wastes little on padding.
+    """
     if stages.encode_units_batch is None:
         return [stages.encode_units(w, s) for w, s in zip(wavs, spans, strict=True)]
-    order = sorted(range(len(wavs)), key=lambda i: wavs[i].size)
-    out: list[Any] = [None] * len(wavs)
-    for start in range(0, len(order), stages.wavlm_batch):
-        picked = order[start : start + stages.wavlm_batch]
-        done = stages.encode_units_batch([wavs[i] for i in picked], [spans[i] for i in picked])
-        for i, segments in zip(picked, done, strict=True):
-            out[i] = segments
-    return out
+    from . import zerosyl
+
+    pieces: list[tuple[int, int, np.ndarray, list]] = []  # chunk, first sample, audio, spans
+    for index, (wav, chunk_spans) in enumerate(zip(wavs, spans, strict=True)):
+        for start, end in zerosyl.split_chunk(wav.size, chunk_spans, stages.wavlm_max_s):
+            pieces.append(
+                (index, start, wav[start:end], zerosyl.spans_of_piece(chunk_spans, start, end))
+            )
+    pieces.sort(key=lambda piece: piece[2].size)
+    done: list[list[tuple[int, Any]]] = [[] for _ in wavs]
+    position = 0
+    while position < len(pieces):
+        stop = position + 1
+        while stop < len(pieces) and stop - position < stages.wavlm_batch and (
+            pieces[stop][2].size * (stop - position + 1)
+            <= WAVLM_BATCH_SECONDS * vad.SAMPLE_RATE
+        ):
+            stop += 1
+        batch = pieces[position:stop]
+        results = stages.encode_units_batch([p[2] for p in batch], [p[3] for p in batch])
+        for (index, start, _wav, _spans), segments in zip(batch, results, strict=True):
+            done[index].append((start, segments))
+        position = stop
+    return [zerosyl.merge_segments(sorted(parts, key=lambda p: p[0])) for parts in done]
 
 
 @dataclass
@@ -261,7 +283,9 @@ class Runner:
         size = max(self.stages.mimi_batch, self.stages.wavlm_batch) * BUFFER_BATCHES
         buffer: list[tuple[Any, np.ndarray, list]] = []
         while True:
+            started = time.perf_counter()
             item = self._model_queue.get()
+            self.stats.queue_wait_seconds += time.perf_counter() - started
             if item is None:
                 if buffer:
                     self._flush(buffer)
@@ -563,10 +587,11 @@ def real_stages(
     *,
     device: str = "cpu",
     models_dir: str = "work/models",
-    wavlm_dtype: str = "float32",
+    wavlm_dtype: str = "bfloat16",
     units_dir: str = "work/units",
-    mimi_batch: int = 16,
-    wavlm_batch: int = 4,
+    mimi_batch: int = 8,
+    wavlm_batch: int = 8,
+    wavlm_max_s: float = 20.0,
     vad_workers: int = 8,
     load_codebooks: bool = True,
 ) -> Stages:
@@ -629,4 +654,5 @@ def real_stages(
         assign=assign,
         mimi_batch=mimi_batch,
         wavlm_batch=wavlm_batch,
+        wavlm_max_s=wavlm_max_s,
     )

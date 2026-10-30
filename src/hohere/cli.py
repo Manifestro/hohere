@@ -221,7 +221,7 @@ def fit_units(
     hours: float = typer.Option(100.0, "--hours", help="hours of tier to embed"),
     ks: str = typer.Option("4096,8192", "--k", help="comma separated codebook sizes"),
     device: str = typer.Option("cuda", "--device", help="cuda or cpu"),
-    wavlm_dtype: str = typer.Option("float32", "--wavlm-dtype"),
+    wavlm_dtype: str = typer.Option("bfloat16", "--wavlm-dtype"),
     units_dir: str = typer.Option("work/units", "--units-dir"),
     models_dir: str = typer.Option("work/models", "--models-dir"),
     iters: int = typer.Option(kmeans.ITERS, "--iters", help="k-means iterations"),
@@ -279,12 +279,13 @@ def run(
     status_token: str | None = typer.Option(None, "--status-token"),
     download_workers: int = typer.Option(8, "--download-workers"),
     decode_workers: int = typer.Option(4, "--decode-workers"),
-    mimi_batch: int = typer.Option(16, "--mimi-batch"),
-    wavlm_batch: int = typer.Option(4, "--wavlm-batch"),
+    mimi_batch: int = typer.Option(8, "--mimi-batch"),
+    wavlm_batch: int = typer.Option(8, "--wavlm-batch"),
+    wavlm_max_s: float = typer.Option(20.0, "--wavlm-max-s", help="longest WavLM input"),
     vad_workers: int | None = typer.Option(
         None, "--vad-workers", help="Silero processes [default: 8, on cpu a quarter of the cores]"
     ),
-    wavlm_dtype: str = typer.Option("float32", "--wavlm-dtype"),
+    wavlm_dtype: str = typer.Option("bfloat16", "--wavlm-dtype"),
     bench_minutes: float | None = typer.Option(
         None, "--bench-minutes", help="measure, do not produce"
     ),
@@ -313,7 +314,7 @@ def run(
         stages = pipeline_mod.real_stages(
             device=resolved, models_dir=models_dir, wavlm_dtype=wavlm_dtype,
             units_dir=units_dir, mimi_batch=mimi_batch, wavlm_batch=wavlm_batch,
-            vad_workers=vad_workers,
+            wavlm_max_s=wavlm_max_s, vad_workers=vad_workers,
         )
         if bench_minutes is not None:
             payload = bench_mod.run_bench(

@@ -181,6 +181,52 @@ def segment_features(
     )
 
 
+def split_chunk(n_samples: int, spans: list[vad.Span], max_s: float) -> list[tuple[int, int]]:
+    """Cut a chunk at Silero pauses into pieces of at most `max_s` where the pauses allow.
+
+    WavLM's cost grows with the length of its input, and the speech of a pause-free
+    stretch cannot be cut, so such a stretch stays whole. Cuts sit in the middle of a pause
+    on a frame boundary: a piece's frames are the chunk's frames shifted by a whole number.
+    """
+    limit = int(max_s * vad.SAMPLE_RATE)
+    cuts = [
+        (first[1] + second[0]) // 2 // HOP * HOP
+        for first, second in itertools.pairwise(sorted(spans))
+    ]
+    pieces: list[tuple[int, int]] = []
+    start = last = 0
+    for cut in cuts:
+        if cut - start > limit and last > start:
+            pieces.append((start, last))
+            start = last
+        last = cut
+    if n_samples - start > limit and last > start:
+        pieces.append((start, last))
+        start = last
+    pieces.append((start, n_samples))
+    return pieces
+
+
+def spans_of_piece(spans: list[vad.Span], start: int, end: int) -> list[vad.Span]:
+    """The speech spans inside `[start, end)`, relative to `start`."""
+    return [(max(s, start) - start, min(e, end) - start) for s, e in spans if e > start and s < end]
+
+
+def merge_segments(parts: list[tuple[int, Segments]]) -> Segments:
+    """The units of a chunk from its pieces: `(first sample of the piece, its segments)`."""
+    return Segments(
+        unit_start=np.concatenate(
+            [part.unit_start + start // HOP for start, part in parts]
+        ).astype(np.int32),
+        unit_end=np.concatenate(
+            [part.unit_end + start // HOP for start, part in parts]
+        ).astype(np.int32),
+        embeddings=np.concatenate([part.embeddings for _start, part in parts]),
+        boundaries=[b + start // HOP for start, part in parts for b in part.boundaries],
+        dropped=sum(part.dropped for _start, part in parts),
+    )
+
+
 def checkpoint_path(models_dir: str | os.PathLike[str] = "work/models") -> Path:
     """The local checkpoint, downloaded once (the file is ~1.2 GB, so cached)."""
     target = Path(models_dir) / CHECKPOINT_NAME
