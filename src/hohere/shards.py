@@ -92,6 +92,12 @@ class ShardWriter:
     def is_open(self) -> bool:
         return self._tar is not None
 
+    def open(self) -> str:
+        """Start writing `shard-NNNNNN`; returns its name (idempotent while open)."""
+        if self._tar is None:
+            self._open_new()
+        return self.name
+
     def _open_new(self) -> None:
         self.name = shard_name(self._index)
         self._index += 1

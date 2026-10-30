@@ -5,12 +5,22 @@ between two spans. A chunk is `[first span start - lead, last span end + tail]` 
 `lead`/`tail` are at most 0.5 s and at most half of the surrounding gap, so edge
 silence is short and two neighbouring chunks never overlap.
 
-The greedy rule: grow a chunk span by span; once its speech extent reaches 30 s, look
-ahead for the widest gap that still keeps the whole chunk within 60 s and cut there
-(if no look-ahead cut point fits, cut at the gap the chunk already reached). A span
-that is longer than 60 s on its own cannot be chunked and is dropped; a tail shorter
-than 30 s is merged into the previous chunk when the result stays within 60 s, and
-dropped otherwise. Dropped pieces are counted, never silently ignored.
+The rule, in order:
+
+1. grow a chunk span by span; once its speech extent reaches 30 s, look ahead for the
+   widest gap that still keeps the whole chunk (edges included) within 60 s and cut
+   there;
+2. if even the shortest chunk that reaches 30 s would overshoot 60 s (25 s of spans
+   followed by a 40 s span, say), drop the chunk's leading span(s) — counting each in
+   `dropped_lead` — and keep growing from the span that follows;
+3. a span longer than 60 s on its own cannot be chunked and is dropped
+   (`dropped_long`);
+4. a tail shorter than 30 s is merged into the previous chunk when the result still
+   fits in 60 s (`merged_tail`), and dropped otherwise (`dropped_tail`).
+
+So every chunk `plan` emits is within [30, 60] s, boundaries only ever fall in a VAD
+gap, and neighbouring chunks never overlap. Dropped pieces are counted, never silently
+ignored.
 """
 
 from __future__ import annotations
@@ -30,9 +40,10 @@ class ChunkPlan:
     """Chunks of one file plus the counters of what was thrown away."""
 
     chunks: list[Span] = field(default_factory=list)
-    dropped_long: int = 0
-    dropped_tail: int = 0
-    merged_tail: int = 0
+    dropped_long: int = 0  # a span too long to ever fit
+    dropped_tail: int = 0  # a tail shorter than min_s that could not be merged
+    dropped_lead: int = 0  # leading spans of an overshooting chunk
+    merged_tail: int = 0  # tails folded into the previous chunk
 
     @property
     def kept_seconds(self) -> float:
@@ -92,11 +103,11 @@ def plan(
     count = len(spans)
     index = 0
     while index < count:
-        if too_long[index]:
+        if too_long[index]:  # a span that cannot be cut down to size
             result.dropped_long += 1
             index += 1
             continue
-        stop = index  # a too-long span cannot belong to any chunk: end the run there
+        stop = index  # a too-long span ends the run of usable spans
         while stop < count and not too_long[stop]:
             stop += 1
         while index < stop:
@@ -120,7 +131,7 @@ def plan(
             candidate = last
             while candidate < stop:
                 start, end = _bounds(spans, index, candidate, duration, edge_s)
-                if end - start > max_s:  # any later candidate is only longer
+                if end - start > max_s:  # every later candidate is only longer
                     break
                 if candidate + 1 < stop:
                     gap = spans[candidate + 1][0] - spans[candidate][1]
@@ -128,8 +139,15 @@ def plan(
                         best_gap, cut = gap, candidate
                 candidate += 1
             if cut is None:
-                # The span that reached min_s already overshoots max_s on its own.
-                cut = last
+                start, end = _bounds(spans, index, last, duration, edge_s)
+                if end - start <= max_s and last < stop:
+                    cut = last  # the shortest chunk that reaches min_s does fit
+                else:
+                    # It overshoots 60 s: drop this leading span and grow again from
+                    # the next one, so the chunk never grows past max_s.
+                    result.dropped_lead += 1
+                    index += 1
+                    continue
             result.chunks.append(_bounds(spans, index, cut, duration, edge_s))
             index = cut + 1
     return result

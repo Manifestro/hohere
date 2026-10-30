@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -72,6 +73,12 @@ def archive_url(split: str) -> str:
 def sanitize(text: str) -> str:
     """Everything outside `[A-Za-z0-9_-]` becomes `_` (file ids go into paths)."""
     return SAFE.sub("_", text)
+
+
+def duplicate_ids(ids: Iterable[str]) -> list[str]:
+    """Ids that appear more than once, sorted — one pass, not `ids.count` per id."""
+    counts = Counter(ids)
+    return sorted(fid for fid, count in counts.items() if count > 1)
 
 
 def make_file_id(split: str, speaker: str, book: str, stem: str) -> str:
@@ -202,9 +209,8 @@ def index_split(
             files = list(pool.map(build, pairs.pairs))
     else:
         files = [build(pair) for pair in pairs.pairs]
-    ids = [f.file_id for f in files]
-    duplicates = {fid for fid in ids if ids.count(fid) > 1}
-    assert not duplicates, f"non-unique file ids in {split}: {sorted(duplicates)[:5]}"
+    duplicates = duplicate_ids(f.file_id for f in files)
+    assert not duplicates, f"non-unique file ids in {split}: {duplicates[:5]}"
     log.info("%s: %d files, %d orphans", split, len(files), len(pairs.orphan_flacs))
     return files
 
@@ -232,7 +238,6 @@ def index(
         if state is not None:
             state.add_files(fresh)
         files.extend(fresh)
-    ids = [f.file_id for f in files]
-    duplicates = {fid for fid in ids if ids.count(fid) > 1}
-    assert not duplicates, f"non-unique file ids: {sorted(duplicates)[:5]}"
+    duplicates = duplicate_ids(f.file_id for f in files)
+    assert not duplicates, f"non-unique file ids: {duplicates[:5]}"
     return files

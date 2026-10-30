@@ -1,0 +1,120 @@
+"""Mimi codes: 32 codebooks at 12.5 Hz for a 16 kHz chunk.
+
+The audio is resampled to Mimi's 24 kHz, batched (batches are padded at the end to the
+longest chunk and cut back to `T = ceil(n_24k / 1920)` frames), and the encoder is
+asked for 32 codebooks explicitly. Codes are stored `int16`, `[32, T]`.
+
+Moshi and torch are imported inside the functions: Part A installs neither.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+log = logging.getLogger(__name__)
+
+SAMPLE_RATE = 24000
+SOURCE_RATE = 16000
+HOP = 1920  # samples per 12.5 Hz frame at 24 kHz
+CODEBOOKS = 32
+MODEL_REPO = "kyutai/moshiko-pytorch-bf16"
+MODEL_FILE = "tokenizer-e351c8d8-checkpoint125.safetensors"
+MODEL_NAME = "mimi"
+BATCH = 16
+
+
+def frames_for(n_samples_24k: int) -> int:
+    """`T = ceil(n_24k / 1920)` frames of a chunk."""
+    return math.ceil(n_samples_24k / HOP) if n_samples_24k > 0 else 0
+
+
+def checkpoint_path(models_dir: str | os.PathLike[str] = "work/models") -> str:
+    """The tokenizer weights, fetched once into `work/models` (a local HF cache)."""
+    from huggingface_hub import hf_hub_download
+
+    target = Path(models_dir) / MODEL_FILE
+    if target.exists():
+        return str(target)
+    Path(models_dir).mkdir(parents=True, exist_ok=True)
+    return hf_hub_download(
+        repo_id=MODEL_REPO, filename=MODEL_FILE, local_dir=str(models_dir)
+    )
+
+
+@dataclass
+class MimiEncoder:
+    """The loaded Mimi model plus the device/dtype it runs on."""
+
+    model: Any
+    device: Any
+    sample_rate: int = SAMPLE_RATE
+
+    def resample(self, wav16: np.ndarray) -> np.ndarray:
+        import torch
+        import torchaudio
+
+        audio = torch.from_numpy(np.asarray(wav16, dtype=np.float32).reshape(1, -1))
+        if int(audio.shape[1]) == 0:
+            return np.zeros(0, dtype=np.float32)
+        return (
+            torchaudio.functional.resample(audio, SOURCE_RATE, SAMPLE_RATE)
+            .squeeze(0)
+            .numpy()
+        )
+
+    def encode_batch(self, chunks16: list[np.ndarray]) -> list[np.ndarray]:
+        """Encode 16 kHz chunks; returns `int16 [32, T]` per chunk."""
+        import torch
+
+        if not chunks16:
+            return []
+        resampled = [self.resample(chunk) for chunk in chunks16]
+        lengths = [frames_for(len(chunk)) for chunk in resampled]
+        widest = max((chunk.size for chunk in resampled), default=0)
+        widest = max(widest, HOP)
+        pad_to = int(math.ceil(widest / HOP) * HOP)
+        batch = np.zeros((len(resampled), pad_to), dtype=np.float32)
+        for row, chunk in enumerate(resampled):
+            batch[row, : chunk.size] = chunk
+        tensor = torch.from_numpy(batch).to(self.device)
+        with torch.inference_mode():
+            codes = self.model.encode(tensor)
+        if isinstance(codes, (list, tuple)):
+            codes = codes[0]
+        if codes.dim() == 4:  # some versions return [B, K, Q, T]
+            codes = codes[:, :, 0, :]
+        if codes.dim() == 3 and codes.shape[1] == CODEBOOKS:
+            pass
+        elif codes.dim() == 3 and codes.shape[2] == CODEBOOKS:
+            codes = codes.transpose(1, 2)
+        else:
+            raise RuntimeError(f"unexpected Mimi codes shape {tuple(codes.shape)}")
+        assert codes.shape[1] == CODEBOOKS, f"expected {CODEBOOKS} codebooks, got {codes.shape[1]}"
+        out: list[np.ndarray] = []
+        for row, frames in enumerate(lengths):
+            piece = codes[row, :, :frames].to(torch.int16).cpu().numpy()
+            out.append(np.ascontiguousarray(piece))
+        return out
+
+
+def load_encoder(path: str | None = None, device: str = "cuda", *, batch: int = BATCH,
+                 models_dir: str = "work/models") -> MimiEncoder:
+    """Load Mimi once; call it from the single model worker only."""
+    import torch
+    from moshi.models import loaders
+
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    resolved = path or checkpoint_path(models_dir)
+    model = loaders.get_mimi(resolved, device=device)
+    model.set_num_codebooks(CODEBOOKS)
+    model.eval()
+    log.info("Mimi loaded from %s on %s (batch %d)", resolved, device, batch)
+    return MimiEncoder(model=model, device=device)

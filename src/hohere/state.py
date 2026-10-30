@@ -44,11 +44,15 @@ CREATE TABLE IF NOT EXISTS files (
     vad          TEXT NOT NULL,
     order_rank   INTEGER,
     status       TEXT NOT NULL DEFAULT 'todo',
-    shard        TEXT
+    shard        TEXT,
+    n_chunks     INTEGER,
+    chunk_hours  REAL,
+    cum_hours    REAL
 );
 CREATE INDEX IF NOT EXISTS files_split ON files(split);
 CREATE INDEX IF NOT EXISTS files_rank ON files(order_rank);
 CREATE INDEX IF NOT EXISTS files_status ON files(status);
+CREATE INDEX IF NOT EXISTS files_cum ON files(cum_hours);
 CREATE TABLE IF NOT EXISTS shards (
     name         TEXT PRIMARY KEY,
     status       TEXT NOT NULL,
@@ -66,8 +70,12 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 """
 
+class StateError(RuntimeError):
+    """The state DB is not in the shape the requested operation needs."""
+
+
 SHARD_STATUSES = ("open", "closed", "uploaded")
-FILE_STATUSES = ("todo", "done")
+FILE_STATUSES = ("todo", "done", "error")
 _COLUMNS = (
     "file_id",
     "split",
@@ -228,6 +236,10 @@ class State:
             raise ValueError(f"unknown file status {status!r}")
         self._write("UPDATE files SET status = ? WHERE file_id = ?", (status, file_id))
 
+    def file_status(self, file_id: str) -> str | None:
+        row = self._one("SELECT status FROM files WHERE file_id = ?", (file_id,))
+        return row["status"] if row else None
+
     def set_shard(self, file_id: str, shard: str | None, *, status: str = "todo") -> None:
         if status not in FILE_STATUSES:
             raise ValueError(f"unknown file status {status!r}")
@@ -235,20 +247,150 @@ class State:
             "UPDATE files SET shard = ?, status = ? WHERE file_id = ?", (shard, status, file_id)
         )
 
+    def rank_of(self, file_id: str) -> int | None:
+        row = self._one("SELECT order_rank FROM files WHERE file_id = ?", (file_id,))
+        return int(row["order_rank"]) if row and row["order_rank"] is not None else None
+
+    def cum_hours_of(self, file_id: str) -> float | None:
+        row = self._one("SELECT cum_hours FROM files WHERE file_id = ?", (file_id,))
+        return float(row["cum_hours"]) if row and row["cum_hours"] is not None else None
+
     def shard_of(self, file_id: str) -> str | None:
         row = self._one("SELECT shard FROM files WHERE file_id = ?", (file_id,))
         return row["shard"] if row else None
 
-    # -- order -------------------------------------------------------------------
-    def assign_order(self) -> int:
-        """Rank every indexed file by `sha256(file_id)` (idempotent)."""
-        ids = [row["file_id"] for row in self._all("SELECT file_id FROM files")]
-        ranks = order.rank(ids)
-        self._write_many(
-            "UPDATE files SET order_rank = ? WHERE file_id = ?",
-            [(rank, fid) for fid, rank in ranks.items()],
+    # -- plan --------------------------------------------------------------------
+    def assign_order(self, splits: Sequence[str] | None = None) -> int:
+        """Freeze the ranks of the indexed splits, by `sha256(file_id)`.
+
+        Ranks are final: a run only ever addresses files through them, so a new split
+        appearing later would silently reshuffle the order of a finished tier.
+        Re-ranking therefore only ever *extends* the order — the files already ranked
+        keep their rank, new files are appended after them — and asking for a split
+        that was never indexed is an error, not an empty tier.
+        """
+        indexed = sorted({row["split"] for row in self._all("SELECT DISTINCT split FROM files")})
+        if not indexed:
+            raise StateError("no files are indexed; run `hohere index` first")
+        wanted = list(splits) if splits is not None else indexed
+        missing = [split for split in wanted if split not in indexed]
+        if missing:
+            raise StateError(
+                f"split(s) {missing} are not indexed (indexed: {indexed}); "
+                "run `hohere index --splits " + ",".join(missing) + "` first"
+            )
+        planned = self.get_meta("plan_splits")
+        if planned is not None and sorted(planned) != indexed:
+            raise StateError(
+                f"the plan covers splits {planned} but the DB now indexes {indexed}; "
+                "the order is final once encoding started"
+            )
+        ranked = self._all(
+            "SELECT file_id, order_rank FROM files WHERE order_rank IS NOT NULL "
+            "ORDER BY order_rank"
         )
-        return len(ranks)
+        known = {row["file_id"] for row in ranked}
+        next_rank = (max((row["order_rank"] for row in ranked), default=-1)) + 1
+        fresh = [
+            row["file_id"]
+            for row in self._all("SELECT file_id FROM files WHERE order_rank IS NULL")
+            if row["file_id"] not in known
+        ]
+        for file_id, rank in order.rank(fresh).items():
+            self._write(
+                "UPDATE files SET order_rank = ? WHERE file_id = ?", (next_rank + rank, file_id)
+            )
+        self.set_meta("plan_splits", indexed)
+        return len(fresh)
+
+    def plan_chunks(self, min_s: float = 30.0, max_s: float = 60.0) -> dict[str, Any]:
+        """Chunk every file from its VAD spans and store `n_chunks`/`cum_hours`.
+
+        Chunking needs nothing but the Libri-Light VAD, so it happens at index time
+        and a tier is exact before a single chunk is encoded. `cum_hours` is the
+        cumulative *kept* audio over `order_rank`, so `--until-hours N` is just
+        `cum_hours <= N` (the first file crossing N included).
+        """
+        from .chunk import plan as plan_file
+
+        if self._one("SELECT COUNT(*) AS n FROM files WHERE order_rank IS NULL")["n"]:
+            self.assign_order()
+        rows = self._all(
+            "SELECT file_id, vad FROM files WHERE order_rank IS NOT NULL ORDER BY order_rank"
+        )
+        total = 0.0
+        updates: list[tuple[int, float, float, str]] = []
+        counted = 0
+        for row in rows:
+            vad = [(float(a), float(b)) for a, b in json.loads(row["vad"])]
+            duration = max((end for _start, end in vad), default=0.0)
+            result = plan_file(vad, duration, min_s=min_s, max_s=max_s)
+            hours = result.kept_seconds / 3600.0
+            total += hours
+            updates.append((len(result.chunks), hours, total, row["file_id"]))
+            counted += len(result.chunks)
+        self._write_many(
+            "UPDATE files SET n_chunks = ?, chunk_hours = ?, cum_hours = ? WHERE file_id = ?",
+            updates,
+        )
+        self.set_meta("plan_hours", total)
+        return {"files": len(rows), "chunks": counted, "chunk_hours": total}
+
+    def select_until(self, hours: float | str | None = None) -> list[SourceFile]:
+        """The files of a tier: everything with `cum_hours <= N`, plus the first crossing.
+
+        `hours` may be a number, `"full"`/None (everything) or a tier name
+        (`100`, `"full"`). Files are returned in `order_rank` order.
+        """
+        limit = None if hours in (None, "full") else float(hours)
+        if limit is not None and self._one(
+            "SELECT COUNT(*) AS n FROM files WHERE cum_hours IS NULL"
+        )["n"]:
+            self.plan_chunks()
+        sql = (
+            f"SELECT {', '.join(_COLUMNS)} FROM files WHERE order_rank IS NOT NULL "
+            f"AND (? IS NULL OR cum_hours <= ?) ORDER BY order_rank"
+        )
+        rows = self._all(sql, (limit, limit))
+        if limit is not None:
+            # the first file crossing N is part of the tier, so its chunks are kept
+            passing = self._one(
+                "SELECT file_id FROM files WHERE cum_hours > ? ORDER BY order_rank LIMIT 1",
+                (limit,),
+            )
+            if passing is not None:
+                extra = self._all(
+                    f"SELECT {', '.join(_COLUMNS)} FROM files WHERE file_id = ?",
+                    (passing["file_id"],),
+                )
+                rows = [*rows, *extra]
+        return [_row_to_file(tuple(row)) for row in rows]
+
+    def tier_hours(self, hours: float | str | None = None) -> dict[str, float]:
+        """Planned totals of a tier, so the status page can show remaining/ETA."""
+        limit = None if hours in (None, "full") else float(hours)
+        if self._one("SELECT COUNT(*) AS n FROM files WHERE cum_hours IS NULL")["n"]:
+            self.plan_chunks()
+        row = self._one(
+            "SELECT COUNT(*) AS files, COALESCE(SUM(n_chunks), 0) AS chunks, "
+            "COALESCE(MAX(cum_hours), 0.0) AS hours FROM files "
+            "WHERE order_rank IS NOT NULL AND (? IS NULL OR cum_hours <= ?)",
+            (limit, limit),
+        )
+        extra = (
+            self._one(
+                "SELECT chunk_hours FROM files WHERE cum_hours > ? ORDER BY order_rank LIMIT 1",
+                (limit,),
+            )
+            if limit is not None
+            else None
+        )
+        hours_total = float(row["hours"]) + (float(extra["chunk_hours"]) if extra else 0.0)
+        return {
+            "files": int(row["files"]) + (1 if extra else 0),
+            "chunks": int(row["chunks"]),
+            "hours": hours_total,
+        }
 
     def ordered_files(self, status: str | None = None) -> list[SourceFile]:
         """Indexed files in the fixed order (assigning ranks first if needed)."""
