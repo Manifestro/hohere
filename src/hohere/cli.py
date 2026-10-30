@@ -241,7 +241,7 @@ def fit_units(
             raise typer.BadParameter(f"no files within {hours} h; is the plan built?")
         stages = pipeline_mod.real_stages(
             device=device, models_dir=models_dir, wavlm_dtype=wavlm_dtype,
-            units_dir=units_dir,
+            units_dir=units_dir, load_codebooks=False,
         )
         embedded = fitunits.embed(files, stages, out_dir=Path(units_dir) / "emb")
         typer.echo(json.dumps(embedded, indent=2))

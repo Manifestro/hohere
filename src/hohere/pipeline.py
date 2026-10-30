@@ -503,10 +503,14 @@ def real_stages(
     wavlm_dtype: str = "float32",
     units_dir: str = "work/units",
     mimi_batch: int = 16,
+    load_codebooks: bool = True,
 ) -> Stages:
-    """The production stages: SoundFile, Silero, WavLM/ZeroSyl, Mimi, codebooks."""
+    """The production stages: SoundFile, Silero, WavLM/ZeroSyl, Mimi, codebooks.
+
+    `fit-units` passes `load_codebooks=False`: it is what creates them.
+    """
     readers: dict[str, Any] = {}
-    codebooks = {k: kmeans.load(units_dir, k) for k in (4096, 8192)}
+    codebooks = {k: kmeans.load(units_dir, k) for k in (4096, 8192)} if load_codebooks else {}
     encoder = {"wavlm": None, "mimi": None}
 
     def download(file: SourceFile) -> bytes:
