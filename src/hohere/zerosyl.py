@@ -53,12 +53,9 @@ class Segments:
 
 
 def layer_norm(wav: np.ndarray) -> np.ndarray:
-    """`torch.nn.functional.layer_norm(wav, wav.shape)`: zero mean, unit std."""
+    """`torch.nn.functional.layer_norm(wav, wav.shape)`, including its eps of 1e-5."""
     audio = np.asarray(wav, dtype=np.float32).reshape(-1)
-    std = float(audio.std())
-    if std == 0.0:
-        return audio - float(audio.mean())
-    return (audio - float(audio.mean())) / std
+    return (audio - audio.mean()) / np.sqrt(audio.var() + 1e-5)
 
 
 def frame_norms(features: np.ndarray) -> np.ndarray:
@@ -166,7 +163,7 @@ def segment_features(
         first, last = int(kept[0]), int(kept[-1])
         starts.append(start + first)
         ends.append(start + last + 1)
-        vectors.append(np.asarray(semantic_features[start + first : start + last + 1]).mean(axis=0))
+        vectors.append(np.asarray(semantic_features[start:end])[segment].mean(axis=0))
     dim = int(semantic_features.shape[-1]) if semantic_features.ndim == 2 else 0
     embeddings = (
         np.stack(vectors).astype(np.float32)

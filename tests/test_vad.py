@@ -6,15 +6,15 @@ from hohere import vad
 
 
 def test_mask_is_per_wavlm_frame_centred_and_sample_accurate():
-    # one span covering samples 200..520: frame centres are 200, 520, 840
-    spans = [(200, 520)]
+    # one span covering samples 160..480: frame centres are 160, 480, 800
+    spans = [(160, 480)]
     mask = vad.speech_mask50(spans, 3)
-    assert mask.tolist() == [True, False, False]  # centre 200 inside, 520 is not
+    assert mask.tolist() == [True, False, False]  # centre 160 inside, 480 is not
 
 
 def test_mask_handles_many_spans_and_frames():
     spans = [(0, 400), (640, 1000)]
-    mask = vad.speech_mask50(spans, 4)  # centres 200, 520, 840, 1160
+    mask = vad.speech_mask50(spans, 4)  # centres 160, 480, 800, 1120
     assert mask.tolist() == [True, False, True, False]
     assert mask.dtype == bool
 

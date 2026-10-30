@@ -59,9 +59,10 @@ def speech(wav16: np.ndarray, model=None) -> list[Span]:
 
 
 def speech_mask50(spans: Sequence[Span], n_frames: int) -> np.ndarray:
-    """One bool per WavLM frame: frame `i` covers [i*320, i*320+400).
+    """One bool per WavLM frame: the input is padded by 40 samples, so frame `i` covers
+    [i*320-40, i*320+360) of the chunk.
 
-    A frame is speech when its centre sample `i*320 + 200` lies inside a span.
+    A frame is speech when its centre sample `i*320 + 160` lies inside a span.
     """
     frames = int(n_frames)
     mask = np.zeros(max(0, frames), dtype=bool)
@@ -69,7 +70,7 @@ def speech_mask50(spans: Sequence[Span], n_frames: int) -> np.ndarray:
         return mask
     starts = np.array([int(start) for start, _end in spans], dtype=np.int64)
     ends = np.array([int(end) for _start, end in spans], dtype=np.int64)
-    centres = np.arange(frames, dtype=np.int64) * WAVLM_HOP + WAVLM_WIN // 2
+    centres = np.arange(frames, dtype=np.int64) * WAVLM_HOP + WAVLM_WIN // 2 - 40
     index = np.searchsorted(starts, centres, side="right") - 1
     inside = index >= 0
     safe = np.where(inside, index, 0)

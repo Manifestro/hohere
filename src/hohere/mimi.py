@@ -83,20 +83,11 @@ class MimiEncoder:
         batch = np.zeros((len(resampled), pad_to), dtype=np.float32)
         for row, chunk in enumerate(resampled):
             batch[row, : chunk.size] = chunk
-        tensor = torch.from_numpy(batch).to(self.device)
+        tensor = torch.from_numpy(batch).unsqueeze(1).to(self.device)  # [B, 1, samples]
         with torch.inference_mode():
             codes = self.model.encode(tensor)
-        if isinstance(codes, (list, tuple)):
-            codes = codes[0]
-        if codes.dim() == 4:  # some versions return [B, K, Q, T]
-            codes = codes[:, :, 0, :]
-        if codes.dim() == 3 and codes.shape[1] == CODEBOOKS:
-            pass
-        elif codes.dim() == 3 and codes.shape[2] == CODEBOOKS:
-            codes = codes.transpose(1, 2)
-        else:
+        if codes.dim() != 3 or codes.shape[1] != CODEBOOKS:
             raise RuntimeError(f"unexpected Mimi codes shape {tuple(codes.shape)}")
-        assert codes.shape[1] == CODEBOOKS, f"expected {CODEBOOKS} codebooks, got {codes.shape[1]}"
         out: list[np.ndarray] = []
         for row, frames in enumerate(lengths):
             piece = codes[row, :, :frames].to(torch.int16).cpu().numpy()
