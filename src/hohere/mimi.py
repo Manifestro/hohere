@@ -75,15 +75,18 @@ class MimiEncoder:
 
         if not chunks16:
             return []
-        resampled = [self.resample(chunk) for chunk in chunks16]
-        lengths = [frames_for(len(chunk)) for chunk in resampled]
-        widest = max((chunk.size for chunk in resampled), default=0)
-        widest = max(widest, HOP)
-        pad_to = int(math.ceil(widest / HOP) * HOP)
-        batch = np.zeros((len(resampled), pad_to), dtype=np.float32)
-        for row, chunk in enumerate(resampled):
+        import torchaudio
+
+        lengths = [frames_for(math.ceil(chunk.size * SAMPLE_RATE / SOURCE_RATE))
+                   for chunk in chunks16]
+        batch = np.zeros((len(chunks16), max(chunk.size for chunk in chunks16)), dtype=np.float32)
+        for row, chunk in enumerate(chunks16):
             batch[row, : chunk.size] = chunk
-        tensor = torch.from_numpy(batch).unsqueeze(1).to(self.device)  # [B, 1, samples]
+        tensor = torch.from_numpy(batch).to(self.device)
+        tensor = torchaudio.functional.resample(tensor, SOURCE_RATE, SAMPLE_RATE)
+        width = max(length * HOP for length in lengths)  # whole frames for the longest chunk
+        tensor = torch.nn.functional.pad(tensor, (0, max(0, width - tensor.shape[1])))
+        tensor = tensor[:, :width].unsqueeze(1)  # [B, 1, samples]
         with torch.inference_mode():
             codes = self.model.encode(tensor)
         if codes.dim() != 3 or codes.shape[1] != CODEBOOKS:

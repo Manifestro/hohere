@@ -34,7 +34,9 @@ BOUNDARY_LAYER = 13
 MEANPOOL_LAYER = 22
 WINDOW = 3
 PROMINENCE = 0.45
-PAD = (400 - 320) // 2  # 40 samples either side, as the reference does
+WIN = 400
+HOP = 320
+PAD = (WIN - HOP) // 2  # 40 samples either side, as the reference does
 DTYPES = ("float32", "bfloat16", "float16")
 
 
@@ -248,6 +250,54 @@ class Encoder:
             second.squeeze(0).float().cpu().numpy(),
         )
 
+    def forward_batch(self, wavs: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray]]:
+        """`forward` for chunks of similar length, padded at the end of the batch.
+
+        Every chunk is normalised alone. The mask covers each chunk's samples from its
+        last real frame on, so frames past it are zeroed and never attended to, and a
+        chunk's features are the ones it would get on its own.
+        """
+        import torch
+
+        padded = [
+            np.pad(layer_norm(w) if self.model.cfg.normalize else np.asarray(w, np.float32),
+                   (PAD, PAD))
+            for w in wavs
+        ]
+        width = max(p.size for p in padded)
+        batch = np.zeros((len(padded), width), dtype=np.float32)
+        mask = np.zeros((len(padded), width), dtype=bool)
+        frames = [_frames_of(p.size) for p in padded]
+        for row, (piece, n) in enumerate(zip(padded, frames, strict=True)):
+            batch[row, : piece.size] = piece
+            mask[row, n * HOP :] = True
+        tensor = torch.from_numpy(batch).to(self.device)
+        padding = torch.from_numpy(mask).to(self.device)
+        autocast = torch.autocast(
+            device_type="cuda",
+            dtype=_torch_dtype(self.dtype),
+            enabled=self.dtype != "float32" and torch.cuda.is_available(),
+        )
+        with torch.inference_mode(), autocast:
+            first, second = self.model.extract_dual_features(
+                tensor,
+                padding_mask=padding,
+                output_layer_1=BOUNDARY_LAYER,
+                output_layer_2=MEANPOOL_LAYER,
+            )
+        first = first.float().cpu().numpy()
+        second = second.float().cpu().numpy()
+        return [(first[i, :n], second[i, :n]) for i, n in enumerate(frames)]
+
+    def encode_batch(
+        self, wavs: list[np.ndarray], speech_spans: list[list[vad.Span]]
+    ) -> list[Segments]:
+        """`encode` for several chunks at once."""
+        return [
+            segment_features(first, second, vad.speech_mask50(spans, first.shape[0]))
+            for (first, second), spans in zip(self.forward_batch(wavs), speech_spans, strict=True)
+        ]
+
     def encode(self, wav16: np.ndarray, speech_spans: list[vad.Span] | None = None) -> Segments:
         """Units of one chunk; a `None` mask means "every frame is speech"."""
         first, second = self.forward(wav16)
@@ -258,6 +308,11 @@ class Encoder:
             else vad.speech_mask50(speech_spans, frames)
         )
         return segment_features(first, second, mask)
+
+
+def _frames_of(n_samples: int) -> int:
+    """Frames the convolutional front end makes of `n_samples` (25 ms window, 20 ms hop)."""
+    return (n_samples - WIN) // HOP + 1
 
 
 def _torch_dtype(name: str):

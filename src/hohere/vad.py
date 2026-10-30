@@ -58,6 +58,37 @@ def speech(wav16: np.ndarray, model=None) -> list[Span]:
     return spans
 
 
+def _init_pool_worker() -> None:
+    import os
+
+    os.environ["OMP_NUM_THREADS"] = "1"
+    import torch
+
+    torch.set_num_threads(1)
+    load_model()
+
+
+def _pool_speech(wav16: np.ndarray) -> list[Span]:
+    return speech(wav16)
+
+
+def speech_pool(workers: int):
+    """`speech` on a pool of one-thread processes: Silero needs no GPU and holds no state."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    pool = ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=multiprocessing.get_context("spawn"),  # the parent owns CUDA: never fork it
+        initializer=_init_pool_worker,
+    )
+
+    def run(wav16: np.ndarray) -> list[Span]:
+        return pool.submit(_pool_speech, wav16).result()
+
+    return run
+
+
 def speech_mask50(spans: Sequence[Span], n_frames: int) -> np.ndarray:
     """One bool per WavLM frame: the input is padded by 40 samples, so frame `i` covers
     [i*320-40, i*320+360) of the chunk.

@@ -8,6 +8,7 @@ codebooks) -> `run` (stream -> chunk -> encode -> shard -> upload, with
 from __future__ import annotations
 
 import json
+import os
 import logging
 import time
 from pathlib import Path
@@ -279,6 +280,10 @@ def run(
     download_workers: int = typer.Option(8, "--download-workers"),
     decode_workers: int = typer.Option(4, "--decode-workers"),
     mimi_batch: int = typer.Option(16, "--mimi-batch"),
+    wavlm_batch: int = typer.Option(8, "--wavlm-batch"),
+    vad_workers: int | None = typer.Option(
+        None, "--vad-workers", help="Silero processes [default: 8, on cpu a quarter of the cores]"
+    ),
     wavlm_dtype: str = typer.Option("float32", "--wavlm-dtype"),
     bench_minutes: float | None = typer.Option(
         None, "--bench-minutes", help="measure, do not produce"
@@ -297,15 +302,18 @@ def run(
         if not files:
             raise typer.BadParameter("the tier is empty; run `hohere index` and `hohere plan`")
         resolved = _resolve_device(device)
+        if vad_workers is None:
+            vad_workers = 8
         if resolved == "cpu":
-            import os as _os
-
             import torch
 
-            torch.set_num_threads(_os.cpu_count() or 1)
+            cores = _available_cores()
+            vad_workers = max(1, cores // 4)
+            torch.set_num_threads(max(1, cores - vad_workers))
         stages = pipeline_mod.real_stages(
             device=resolved, models_dir=models_dir, wavlm_dtype=wavlm_dtype,
-            units_dir=units_dir, mimi_batch=mimi_batch,
+            units_dir=units_dir, mimi_batch=mimi_batch, wavlm_batch=wavlm_batch,
+            vad_workers=vad_workers,
         )
         if bench_minutes is not None:
             payload = bench_mod.run_bench(
@@ -334,6 +342,7 @@ def run(
             uploader=uploader,
             download_workers=download_workers,
             decode_workers=decode_workers,
+            vad_workers=vad_workers,
         )
         restore = pipeline_mod.install_stop_handlers(runner)
         try:
@@ -365,6 +374,17 @@ def _require_codebooks(units_dir: str) -> None:
         raise typer.BadParameter(
             f"missing {', '.join(missing)}; run `hohere fit-units` first"
         )
+
+
+def _available_cores() -> int:
+    """Cores this process may really use: a container sees the host's but gets a quota."""
+    try:
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+        if quota != "max":
+            return max(1, int(quota) // int(period))
+    except (OSError, ValueError):
+        pass
+    return os.cpu_count() or 1
 
 
 def _resolve_device(device: str) -> str:

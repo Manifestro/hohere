@@ -171,7 +171,7 @@ class Progress:
                 errors_count = int(state.get_meta("errors_count", 0) or 0)
                 errors = list(state.get_meta("errors_last", []) or [])
             stored_start = state.get_meta("started_at")
-            if stored_start:
+            if stored_start and self.state is None:  # offline: there is no live run to time
                 with contextlib.suppress(ValueError):
                     started_at = datetime.fromisoformat(stored_start).timestamp()
             stored_target = state.get_meta("target_hours")
@@ -181,9 +181,12 @@ class Progress:
         uptime = max(0.0, now - started_at)
         done_hours = float(summary.get("hours") or 0.0)
         source_done = float(summary.get("source_hours_done") or 0.0)
-        overall = done_hours / (uptime / 3600.0) if uptime > 0 else 0.0
+        # A live run is timed on what this process did, not on what earlier runs left behind.
+        run_hours = self.done_hours if self.state is not None else done_hours
+        run_source = self.source_hours_done if self.state is not None else source_done
+        overall = run_hours / (uptime / 3600.0) if uptime > 0 else 0.0
         kept_rate = overall
-        source_rate = source_done / (uptime / 3600.0) if uptime > 0 else 0.0
+        source_rate = run_source / (uptime / 3600.0) if uptime > 0 else 0.0
         remaining_source = float(summary.get("remaining_hours") or 0.0)
 
         eta_target: float | None = None

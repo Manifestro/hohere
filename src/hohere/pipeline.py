@@ -49,6 +49,7 @@ QUEUE_FILES = 8  # files in flight: download -> decode
 QUEUE_CHUNKS = 32  # chunks in flight: decode -> model
 QUEUE_RECORDS = 32  # records in flight: model -> writer
 QUEUE_SHARDS = 2  # closed shards waiting for upload
+BUFFER_BATCHES = 4  # chunks gathered per flush, in batches
 
 
 @dataclass
@@ -62,11 +63,28 @@ class Stages:
     encode_mimi: Callable[[list[np.ndarray]], list[np.ndarray]]
     assign: Callable[[np.ndarray, int], np.ndarray]
     mimi_batch: int = 16
+    # several chunks of similar length at once; without it `encode_units` runs per chunk
+    encode_units_batch: Callable[[list[np.ndarray], list[list]], list] | None = None
+    wavlm_batch: int = 8
     # optional: fraction of boundaries that agree with a float32 reference
     agreement: Callable[[np.ndarray, list[tuple[int, int]]], float] | None = None
 
     def with_overrides(self, **kwargs: Any) -> Stages:
         return Stages(**{**self.__dict__, **kwargs})
+
+
+def encode_many(stages: Stages, wavs: list[np.ndarray], spans: list[list]) -> list:
+    """Units of many chunks, batched by similar length; results keep the input order."""
+    if stages.encode_units_batch is None:
+        return [stages.encode_units(w, s) for w, s in zip(wavs, spans, strict=True)]
+    order = sorted(range(len(wavs)), key=lambda i: wavs[i].size)
+    out: list[Any] = [None] * len(wavs)
+    for start in range(0, len(order), stages.wavlm_batch):
+        picked = order[start : start + stages.wavlm_batch]
+        done = stages.encode_units_batch([wavs[i] for i in picked], [spans[i] for i in picked])
+        for i, segments in zip(picked, done, strict=True):
+            out[i] = segments
+    return out
 
 
 @dataclass
@@ -106,6 +124,7 @@ class Runner:
         target_bytes: int = shards.GIB,
         download_workers: int = 8,
         decode_workers: int = 4,
+        vad_workers: int = 8,
         mark_done: bool = True,
         keep_files: bool = True,
         crash_after_files: int | None = None,
@@ -119,6 +138,7 @@ class Runner:
         self.target_bytes = target_bytes
         self.download_workers = max(1, download_workers)
         self.decode_workers = max(1, decode_workers)
+        self.vad_workers = max(1, vad_workers)
         self.mark_done = mark_done
         self.keep_files = keep_files
         self.crash_after_files = crash_after_files
@@ -134,12 +154,14 @@ class Runner:
         self._n_decoders = self.decode_workers
         self._downloaders_active = self.download_workers
         self._decoders_active = self.decode_workers
+        self._vads_active = self.vad_workers
         self._models_active = 1
         self._writers_active = 1
         self._uploads_active = 1
         self._file_queue: queue.Queue = queue.Queue(maxsize=QUEUE_FILES)
         self._decode_queue: queue.Queue = queue.Queue(maxsize=QUEUE_FILES)
         self._chunk_queue: queue.Queue = queue.Queue(maxsize=QUEUE_CHUNKS)
+        self._model_queue: queue.Queue = queue.Queue(maxsize=QUEUE_CHUNKS)
         self._record_queue: queue.Queue = queue.Queue(maxsize=QUEUE_RECORDS)
         self._shard_queue: queue.Queue = queue.Queue(maxsize=QUEUE_SHARDS)
         self._threads: list[threading.Thread] = []
@@ -172,7 +194,8 @@ class Runner:
     def _fanout(self, stage: str) -> int:
         return {
             "download": self._n_decoders,
-            "decode": 1,  # exactly one model worker
+            "decode": self.vad_workers,
+            "vad": 1,  # exactly one model worker
             "model": 1,  # exactly one writer
             "write": 1,  # exactly one uploader
         }[stage]
@@ -217,41 +240,76 @@ class Runner:
                 self._chunk_queue.put(("chunk", (file, index, start_s, end_s),
                                        _slice(wav, start_s, end_s)))
 
-    def _model_worker(self) -> None:
-        batch: list[tuple[Any, np.ndarray]] = []
+    def _vad_worker(self) -> None:
         while True:
             item = self._chunk_queue.get()
             if item is None:
-                if batch:
-                    self._flush_batch(batch)
+                self._join_out("vad", "_vads_active", self._model_queue)
+                return
+            ctx, wav = item[1], item[2]
+            started = time.perf_counter()
+            try:
+                spans = self.stages.speech(wav)
+            except Exception as exc:
+                self._error(ctx[0], f"vad failed: {exc}")
+                continue
+            self.progress.add("vad", time.perf_counter() - started)
+            self._model_queue.put((ctx, wav, spans))
+
+    def _model_worker(self) -> None:
+        # A buffer of several batches, so that the chunks of a batch can be close in length.
+        size = max(self.stages.mimi_batch, self.stages.wavlm_batch) * BUFFER_BATCHES
+        buffer: list[tuple[Any, np.ndarray, list]] = []
+        while True:
+            item = self._model_queue.get()
+            if item is None:
+                if buffer:
+                    self._flush(buffer)
                 self._join_out("model", "_models_active", self._record_queue)
                 return
-            batch.append((item[1], item[2]))
-            if len(batch) >= self.stages.mimi_batch:
-                self._flush_batch(batch)
-                batch = []
+            buffer.append(item)
+            if len(buffer) >= size:
+                self._flush(buffer)
+                buffer = []
 
-    def _flush_batch(self, batch: list[tuple[Any, np.ndarray]]) -> None:
-        if not batch:
+    def _flush(self, buffer: list[tuple[Any, np.ndarray, list]]) -> None:
+        wavs = [item[1] for item in buffer]
+        spans = [item[2] for item in buffer]
+        try:
+            started = time.perf_counter()
+            units = encode_many(self.stages, wavs, spans)
+            per = (time.perf_counter() - started) / len(buffer)
+            for _ in buffer:
+                self.progress.add("wavlm", per)
+            started = time.perf_counter()
+            codes = self._encode_mimi(wavs)
+            per = (time.perf_counter() - started) / len(buffer)
+            for _ in buffer:
+                self.progress.add("mimi", per)
+        except Exception as exc:  # one bad batch: name its files, keep the run alive
+            for ctx in {id(item[0][0]): item[0] for item in buffer}.values():
+                self._error(ctx[0], f"model failed: {exc}")
             return
-        started = time.perf_counter()
-        codes = self.stages.encode_mimi([wav for _ctx, wav in batch])
-        per = (time.perf_counter() - started) / max(1, len(batch))
-        for (ctx, wav), code in zip(batch, codes, strict=True):
-            self.progress.add("mimi", per)
+        for (ctx, wav, chunk_spans), segments, code in zip(buffer, units, codes, strict=True):
             try:
-                self._encode_chunk(ctx, wav, code)
+                self._encode_chunk(ctx, wav, chunk_spans, segments, code)
             except Exception as exc:
                 self._error(ctx[0], f"model failed: {exc}")
 
-    def _encode_chunk(self, ctx: Any, wav: np.ndarray, codes: np.ndarray) -> None:
+    def _encode_mimi(self, wavs: list[np.ndarray]) -> list[np.ndarray]:
+        order = sorted(range(len(wavs)), key=lambda i: wavs[i].size)
+        out: list[Any] = [None] * len(wavs)
+        for start in range(0, len(order), self.stages.mimi_batch):
+            picked = order[start : start + self.stages.mimi_batch]
+            for i, code in zip(picked, self.stages.encode_mimi([wavs[i] for i in picked]),
+                               strict=True):
+                out[i] = code
+        return out
+
+    def _encode_chunk(
+        self, ctx: Any, wav: np.ndarray, spans: list, segments: Any, codes: np.ndarray
+    ) -> None:
         file, index, start_s, end_s = ctx
-        started = time.perf_counter()
-        spans = self.stages.speech(wav)
-        self.progress.add("vad", time.perf_counter() - started)
-        started = time.perf_counter()
-        segments = self.stages.encode_units(wav, spans)
-        self.progress.add("wavlm", time.perf_counter() - started)
         started = time.perf_counter()
         ids = {k: self.stages.assign(segments.embeddings, k) for k in (4096, 8192)}
         self.progress.add("assign", time.perf_counter() - started)
@@ -415,6 +473,7 @@ class Runner:
         self._n_decoders = min(self.decode_workers, max(1, len(files)))
         self._downloaders_active = self._n_downloaders
         self._decoders_active = self._n_decoders
+        self._vads_active = self.vad_workers
         self.progress.set_totals(
             len(files), sum(file.duration_s for file in files) / 3600.0
         )
@@ -426,6 +485,10 @@ class Runner:
             *(
                 threading.Thread(target=self._decoder, name=f"dec{i}", daemon=True)
                 for i in range(self._n_decoders)
+            ),
+            *(
+                threading.Thread(target=self._vad_worker, name=f"vad{i}", daemon=True)
+                for i in range(self.vad_workers)
             ),
             threading.Thread(target=self._model_worker, name="model", daemon=True),
             threading.Thread(target=self._writer, name="writer", daemon=True),
@@ -503,6 +566,8 @@ def real_stages(
     wavlm_dtype: str = "float32",
     units_dir: str = "work/units",
     mimi_batch: int = 16,
+    wavlm_batch: int = 8,
+    vad_workers: int = 8,
     load_codebooks: bool = True,
 ) -> Stages:
     """The production stages: SoundFile, Silero, WavLM/ZeroSyl, Mimi, codebooks.
@@ -527,17 +592,20 @@ def real_stages(
             raise ValueError(f"{file.file_id}: {audio.shape[1]} channels, expected mono")
         return np.ascontiguousarray(audio[:, 0])
 
-    def speech(wav: np.ndarray):
-        return vad.speech(wav)
+    from . import zerosyl
+
+    speech = vad.speech_pool(vad_workers)
+    encoder["wavlm"] = zerosyl.load_encoder(device=device, dtype=wavlm_dtype, models_dir=models_dir)
+    if load_codebooks:  # a run needs Mimi from the first chunk; fit-units never does
+        from . import mimi
+
+        encoder["mimi"] = mimi.load_encoder(device=device, models_dir=models_dir)
 
     def encode_units(wav: np.ndarray, spans):
-        if encoder["wavlm"] is None:
-            from . import zerosyl
-
-            encoder["wavlm"] = zerosyl.load_encoder(
-                device=device, dtype=wavlm_dtype, models_dir=models_dir
-            )
         return encoder["wavlm"].encode(wav, spans)
+
+    def encode_units_batch(wavs: list[np.ndarray], spans: list[list]):
+        return encoder["wavlm"].encode_batch(wavs, spans)
 
     def encode_mimi(chunks: list[np.ndarray]) -> list[np.ndarray]:
         if encoder["mimi"] is None:
@@ -556,7 +624,9 @@ def real_stages(
         decode=decode,
         speech=speech,
         encode_units=encode_units,
+        encode_units_batch=encode_units_batch,
         encode_mimi=encode_mimi,
         assign=assign,
         mimi_batch=mimi_batch,
+        wavlm_batch=wavlm_batch,
     )

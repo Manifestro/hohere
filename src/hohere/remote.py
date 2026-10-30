@@ -12,8 +12,10 @@ tests, so the retry/stall logic is exercised without a socket.
 
 from __future__ import annotations
 
+import functools
 import http.client
 import logging
+import ssl
 import threading
 import time
 import urllib.request
@@ -37,6 +39,12 @@ class RangeError(RuntimeError):
     """A Range request could not be satisfied."""
 
 
+@functools.lru_cache(maxsize=1)
+def _tls_context() -> ssl.SSLContext:
+    """One context per process: loading the CA bundle costs far more than a handshake."""
+    return ssl.create_default_context()
+
+
 class _KeepAlive:
     """One HTTP(S) connection per thread, reused across Range requests.
 
@@ -56,10 +64,12 @@ class _KeepAlive:
 
     def connection(self) -> http.client.HTTPConnection:
         if self._conn is None:
-            factory = (
-                http.client.HTTPSConnection if self.secure else http.client.HTTPConnection
-            )
-            self._conn = factory(self.host, self.port, timeout=self.timeout)
+            if self.secure:
+                self._conn = http.client.HTTPSConnection(
+                    self.host, self.port, timeout=self.timeout, context=_tls_context()
+                )
+            else:
+                self._conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
         return self._conn
 
     def reset(self) -> None:
@@ -156,8 +166,9 @@ class RangeReader:
                 if not piece:
                     break
                 received += len(piece)
+                # set before the yield: the caller closes this generator at the last byte
+                done = received >= length
                 yield piece
-            done = received >= length
         finally:
             # an aborted body leaves the socket in an unknown state: drop it
             if not done:

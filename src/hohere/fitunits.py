@@ -20,6 +20,8 @@ import json
 import logging
 import os
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,7 @@ import numpy as np
 
 from . import kmeans, records
 from .chunk import plan as plan_chunks
-from .pipeline import Stages, _duration, _slice
+from .pipeline import Stages, _duration, _slice, encode_many
 from .status import Progress
 
 log = logging.getLogger(__name__)
@@ -59,6 +61,7 @@ def embed(
     part_files: int = PART_FILES,
     progress: Progress | None = None,
     max_units_per_part: int = 2_000_000,
+    workers: int = 8,
 ) -> dict[str, Any]:
     """Phase 1: write fp16 embedding parts; already written parts are skipped."""
     directory = Path(out_dir)
@@ -88,34 +91,54 @@ def embed(
                 handle.writelines(f"{file_id}\n" for file_id in part_ids)
             buffer, pending, part_ids = [], [], []
 
-        for count, file in enumerate(files):
-            if file.file_id in finished:  # a previous run wrote this file's part
-                continue
+        def fetch(file):
+            started = time.perf_counter()
             raw = stages.download(file)
+            progress.add("download", time.perf_counter() - started)
+            started = time.perf_counter()
             wav = stages.decode(raw, file)
-            plan = plan_chunks(file.vad, _duration(wav))
-            for chunk_index, (start_s, end_s) in enumerate(plan.chunks):
-                piece = _slice(wav, start_s, end_s)
+            progress.add("decode", time.perf_counter() - started)
+            return wav
+
+        todo = [file for file in files if file.file_id not in finished]
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            ahead: deque = deque()
+            remaining = iter(enumerate(todo))
+            while True:
+                while len(ahead) < workers * 2:
+                    item = next(remaining, None)
+                    if item is None:
+                        break
+                    ahead.append((item[0], item[1], pool.submit(fetch, item[1])))
+                if not ahead:
+                    break
+                count, file, future = ahead.popleft()
+                wav = future.result()
+                plan = plan_chunks(file.vad, _duration(wav))
+                pieces = [_slice(wav, start_s, end_s) for start_s, end_s in plan.chunks]
                 started = time.perf_counter()
-                spans = stages.speech(piece)
+                spans = list(pool.map(stages.speech, pieces))
                 progress.add("vad", time.perf_counter() - started)
                 started = time.perf_counter()
-                segments = stages.encode_units(piece, spans)
+                units = encode_many(stages, pieces, spans)
                 progress.add("wavlm", time.perf_counter() - started)
-                if len(segments) == 0:
-                    continue
-                buffer.append(np.asarray(segments.embeddings, dtype=np.float16))
-                chunk_id = records.chunk_id(file.file_id, chunk_index)
-                for start, end in zip(segments.unit_start, segments.unit_end, strict=True):
-                    pending.append(
-                        {"chunk": chunk_id, "unit_start": int(start), "unit_end": int(end)}
-                    )
-                units_total += len(segments)
-                progress.done_chunk((end_s - start_s) / 3600.0)
-            part_ids.append(file.file_id)
-            if (count + 1) % part_files == 0 or units_total >= max_units_per_part:
-                flush()
-                units_total = 0
+                for chunk_index, (segments, (start_s, end_s)) in enumerate(
+                    zip(units, plan.chunks, strict=True)
+                ):
+                    progress.done_chunk((end_s - start_s) / 3600.0)
+                    if len(segments) == 0:
+                        continue
+                    buffer.append(np.asarray(segments.embeddings, dtype=np.float16))
+                    chunk_id = records.chunk_id(file.file_id, chunk_index)
+                    for start, end in zip(segments.unit_start, segments.unit_end, strict=True):
+                        pending.append(
+                            {"chunk": chunk_id, "unit_start": int(start), "unit_end": int(end)}
+                        )
+                    units_total += len(segments)
+                part_ids.append(file.file_id)
+                if (count + 1) % part_files == 0 or units_total >= max_units_per_part:
+                    flush()
+                    units_total = 0
         flush()
     return {
         "parts": written,
