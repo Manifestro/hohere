@@ -2,7 +2,8 @@
 
 `index` -> `plan` (chunk every file at index time) -> `fit-units` (the ZeroSyl
 codebooks) -> `run` (stream -> chunk -> encode -> shard -> upload, with
-`--status-port`/`--status-token` and `--bench-minutes`).
+`--status-port`/`--status-token` and `--bench-minutes`) -> `ready` (is the tier whole).
+`label` applies the codebooks to other audio, `listen` writes chunks to check by ear.
 """
 
 from __future__ import annotations
@@ -28,10 +29,13 @@ from . import (
     records,
     units,
 )
+from . import label as label_mod
+from . import listen as listen_mod
 from . import order as order_mod
 from . import (
     pipeline as pipeline_mod,
 )
+from . import ready as ready_mod
 from . import (
     shards as shards_mod,
 )
@@ -383,8 +387,10 @@ def run(
         uploader = None if no_upload or not hf_repo else shards_mod.Uploader(hf_repo, prefix)
         uploaded_chunks: set[str] = set()
         first_shard = None
-        if uploader is not None:  # a new machine continues from what the hub already has
-            uploaded_chunks, first_shard = pipeline_mod.resume_from_hub(uploader, state, files)
+        if uploader is not None:  # a machine continues from what the hub already has
+            uploaded_chunks, first_shard = pipeline_mod.resume_from_hub(
+                uploader, state, files, stages.units_version
+            )
         files = [file for file in files if state.status_of(file.file_id) != "done"]
         state.set_meta("target_hours", target)
         runner = pipeline_mod.Runner(
@@ -418,6 +424,100 @@ def run(
             indent=2,
         )
     )
+
+
+@app.command()
+def ready(
+    hf_repo: str = typer.Option(..., "--hf-repo", help="dataset repo"),
+    until_hours: str = typer.Option(..., "--until-hours", help="hours of tier or `full`"),
+    state_path: str = typer.Option(DEFAULT_STATE, "--state", help="the plan the run used"),
+    prefix: str = typer.Option("librilight", "--prefix", help="path prefix inside the repo"),
+    write: bool = typer.Option(False, "--write", help="upload READY-<tier>.json if it passes"),
+    allow_missing: bool = typer.Option(
+        False, "--allow-missing", help="pass with the files that keep failing listed in the report"
+    ),
+) -> None:
+    """Compare a tier of the plan with the manifests on the hub; exit 1 if it is not whole."""
+    target = until_hours if until_hours == "full" else float(until_hours)
+    with State(state_path) as state:
+        planned = [
+            (file.file_id, state.n_chunks_of(file.file_id), state.rank_of(file.file_id))
+            for file in state.select_until(target)
+        ]
+    uploader = shards_mod.Uploader(hf_repo, prefix)
+    report = ready_mod.check(
+        ready_mod.tier_name(target), planned, uploader.uploaded_manifests(),
+        allow_missing=allow_missing,
+    )
+    if write and report["ready"]:
+        report["path"] = ready_mod.publish(uploader, report)
+    typer.echo(json.dumps(report, indent=2))
+    if not report["ready"]:
+        raise typer.Exit(1)
+
+
+@app.command()
+def label(
+    in_dir: str = typer.Option(..., "--in-dir", help="directory of .wav/.flac, read recursively"),
+    out_dir: str = typer.Option(..., "--out-dir", help="one .npz per record, plus manifest.jsonl"),
+    device: str = typer.Option("auto", "--device", help="auto, cuda or cpu"),
+    units_dir: str = typer.Option("work/units", "--units-dir"),
+    models_dir: str = typer.Option("work/models", "--models-dir"),
+    wavlm_dtype: str = typer.Option("bfloat16", "--wavlm-dtype"),
+    wavlm_max_s: float = typer.Option(20.0, "--wavlm-max-s", help="longest WavLM input"),
+    wavlm_batch: int = typer.Option(8, "--wavlm-batch"),
+    # A batch pads its chunks, which reaches the resampler: at 1 the codes of a stimulus
+    # do not depend on which others happen to share its batch.
+    mimi_batch: int = typer.Option(1, "--mimi-batch"),
+    vad_workers: int = typer.Option(4, "--vad-workers", help="Silero processes"),
+    vad_onnx: bool = typer.Option(True, "--vad-onnx/--vad-torch", help="Silero on onnxruntime"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Label arbitrary audio with the fitted codebooks, by the rules of `run`."""
+    _setup_logging(verbose)
+    _require_codebooks(units_dir)
+    stages = pipeline_mod.real_stages(
+        device=_resolve_device(device), models_dir=models_dir, wavlm_dtype=wavlm_dtype,
+        units_dir=units_dir, mimi_batch=mimi_batch, wavlm_batch=wavlm_batch,
+        wavlm_max_s=wavlm_max_s, wavlm_threads=1, vad_workers=vad_workers, vad_onnx=vad_onnx,
+    )
+    summary = label_mod.run(in_dir, out_dir, stages)
+    typer.echo(json.dumps(summary, indent=2))
+    if summary["errors"]:
+        raise typer.Exit(1)
+
+
+@app.command()
+def listen(
+    state_path: str = typer.Option(DEFAULT_STATE, "--state", help="SQLite state DB"),
+    hours: float = typer.Option(100.0, "--hours", help="tier to pick the chunks from"),
+    count: int = typer.Option(20, "--count", help="how many chunks"),
+    out_dir: str = typer.Option("work/listen", "--out-dir"),
+    device: str = typer.Option("auto", "--device", help="auto, cuda or cpu"),
+    models_dir: str = typer.Option("work/models", "--models-dir"),
+    wavlm_dtype: str = typer.Option("bfloat16", "--wavlm-dtype"),
+    vad_workers: int = typer.Option(4, "--vad-workers", help="Silero processes"),
+    hf_repo: str | None = typer.Option(None, "--hf-repo", help="also upload to listen/ there"),
+) -> None:
+    """Write chunks with audible unit boundaries, to check them by ear."""
+    with State(state_path) as state:
+        files = state.select_until(hours)
+    if not files:
+        raise typer.BadParameter(f"no files within {hours} h; is the plan built?")
+    stages = pipeline_mod.real_stages(
+        device=_resolve_device(device), models_dir=models_dir, wavlm_dtype=wavlm_dtype,
+        vad_workers=vad_workers, wavlm_threads=1, load_codebooks=False,
+    )
+    report = listen_mod.run(files, stages, out_dir, count)
+    if hf_repo:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        api.create_repo(hf_repo, repo_type="dataset", private=True, exist_ok=True)
+        api.upload_folder(
+            folder_path=out_dir, path_in_repo="listen", repo_id=hf_repo, repo_type="dataset"
+        )
+    typer.echo(json.dumps(report, indent=2))
 
 
 def _require_codebooks(units_dir: str) -> None:

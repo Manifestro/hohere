@@ -84,7 +84,8 @@ class MimiEncoder:
         middle = len(chunks16) // 2
         return [*self.encode_batch(chunks16[:middle]), *self.encode_batch(chunks16[middle:])]
 
-    def _encode_batch(self, chunks16: list[np.ndarray]) -> list[np.ndarray]:
+    def batch_tensor(self, chunks16: list[np.ndarray]) -> tuple[Any, list[int]]:
+        """The input of `model.encode` `[B, 1, samples]`, and the frames of each chunk."""
         import torch
         import torchaudio
 
@@ -97,7 +98,12 @@ class MimiEncoder:
         tensor = torchaudio.functional.resample(tensor, SOURCE_RATE, SAMPLE_RATE)
         width = max(length * HOP for length in lengths)  # whole frames for the longest chunk
         tensor = torch.nn.functional.pad(tensor, (0, max(0, width - tensor.shape[1])))
-        tensor = tensor[:, :width].unsqueeze(1)  # [B, 1, samples]
+        return tensor[:, :width].unsqueeze(1), lengths
+
+    def _encode_batch(self, chunks16: list[np.ndarray]) -> list[np.ndarray]:
+        import torch
+
+        tensor, lengths = self.batch_tensor(chunks16)
         with torch.inference_mode():
             codes = self.model.encode(tensor)
         if codes.dim() != 3 or codes.shape[1] != CODEBOOKS:

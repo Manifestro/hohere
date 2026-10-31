@@ -43,11 +43,13 @@ def test_uploaded_manifests_need_both_files_and_the_prefix(tmp_path):
     assert uploader.uploaded_manifests() == [("shard-000002", [{"id": "a-000"}])]
 
 
-def test_resume_marks_complete_files_and_finds_the_next_shard():
-    done = {}
+def test_resume_trusts_the_hub_and_finds_the_next_shard():
+    # "partial" was marked done locally, but its last chunk never reached the hub
+    status = {"whole": "todo", "partial": "done"}
     state = types.SimpleNamespace(
         n_chunks_of=lambda file_id: {"whole": 2, "partial": 3}[file_id],
-        set_status=lambda file_id, status: done.__setitem__(file_id, status),
+        status_of=status.__getitem__,
+        set_status=status.__setitem__,
     )
     ids = [
         records.chunk_id("whole", 0),
@@ -59,6 +61,16 @@ def test_resume_marks_complete_files_and_finds_the_next_shard():
     ])
     files = [types.SimpleNamespace(file_id="whole"), types.SimpleNamespace(file_id="partial")]
     chunks, first = pipeline.resume_from_hub(uploader, state, files)
-    assert done == {"whole": "done"}
+    assert status == {"whole": "done", "partial": "todo"}
     assert chunks == set(ids)
     assert first == 5
+
+
+def test_resume_refuses_records_of_other_centroids():
+    state = types.SimpleNamespace(n_chunks_of=lambda file_id: 0, status_of=lambda file_id: "todo")
+    uploader = types.SimpleNamespace(uploaded_manifests=lambda: [
+        ("shard-000000", [{"id": "a-000", "units_k8192": "old"}])
+    ])
+    with pytest.raises(ValueError, match="units_k8192"):
+        pipeline.resume_from_hub(uploader, state, [], {"units_k8192": "new"})
+    assert pipeline.resume_from_hub(uploader, state, [], {"units_k8192": "old"})[1] == 1

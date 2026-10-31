@@ -72,6 +72,8 @@ class Stages:
     wavlm_threads: int = 1  # WavLM batches on the device at once
     # optional: fraction of boundaries that agree with a float32 reference
     agreement: Callable[[np.ndarray, list[tuple[int, int]]], float] | None = None
+    # manifest fields naming the centroids: `units_k4096`, `units_k8192` -> sha256 of the .npy
+    units_version: dict[str, str] = field(default_factory=dict)
 
     def with_overrides(self, **kwargs: Any) -> Stages:
         return Stages(**{**self.__dict__, **kwargs})
@@ -116,6 +118,30 @@ def encode_many(
         for (index, start, _wav, _spans), segments in zip(batch, results, strict=True):
             done[index].append((start, segments))
     return [zerosyl.merge_segments(sorted(parts, key=lambda p: p[0])) for parts in done]
+
+
+def encode_mimi_sorted(stages: Stages, wavs: list[np.ndarray]) -> list[np.ndarray]:
+    """Mimi codes in the input order; a batch holds chunks of similar length."""
+    order = sorted(range(len(wavs)), key=lambda i: wavs[i].size)
+    out: list[Any] = [None] * len(wavs)
+    for start in range(0, len(order), stages.mimi_batch):
+        picked = order[start : start + stages.mimi_batch]
+        for i, code in zip(picked, stages.encode_mimi([wavs[i] for i in picked]), strict=True):
+            out[i] = code
+    return out
+
+
+def unit_record(stages: Stages, segments: Any, codes: np.ndarray, spans: list) -> dict[str, Any]:
+    """The arrays of one record: Mimi codes, units under both codebooks, pauses."""
+    ids = {k: stages.assign(segments.embeddings, k) for k in (4096, 8192)}
+    return {
+        "codes": codes,
+        "unit_start": segments.unit_start,
+        "unit_end": segments.unit_end,
+        "unit_k4096": ids[4096].astype(np.int16),
+        "unit_k8192": ids[8192].astype(np.int16),
+        "sil_start": np.asarray(vad.pauses(spans), dtype=np.int32),
+    }
 
 
 @dataclass
@@ -349,33 +375,18 @@ class Runner:
         return codes
 
     def _encode_mimi(self, wavs: list[np.ndarray]) -> list[np.ndarray]:
-        order = sorted(range(len(wavs)), key=lambda i: wavs[i].size)
-        out: list[Any] = [None] * len(wavs)
-        for start in range(0, len(order), self.stages.mimi_batch):
-            picked = order[start : start + self.stages.mimi_batch]
-            for i, code in zip(picked, self.stages.encode_mimi([wavs[i] for i in picked]),
-                               strict=True):
-                out[i] = code
-        return out
+        return encode_mimi_sorted(self.stages, wavs)
 
     def _encode_chunk(
         self, ctx: Any, wav: np.ndarray, spans: list, segments: Any, codes: np.ndarray
     ) -> None:
         file, index, start_s, end_s = ctx
         started = time.perf_counter()
-        ids = {k: self.stages.assign(segments.embeddings, k) for k in (4096, 8192)}
+        record = unit_record(self.stages, segments, codes, spans)
         self.progress.add("assign", time.perf_counter() - started)
         if self.stages.agreement is not None:
             self.stats.agreements.append(float(self.stages.agreement(wav, spans)))
         n_frames = int(codes.shape[-1])
-        record = {
-            "codes": codes,
-            "unit_start": segments.unit_start,
-            "unit_end": segments.unit_end,
-            "unit_k4096": ids[4096].astype(np.int16),
-            "unit_k8192": ids[8192].astype(np.int16),
-            "sil_start": np.asarray(vad.pauses(spans), dtype=np.int32),
-        }
         meta = {
             "id": records.chunk_id(file.file_id, index),
             "file_id": file.file_id,
@@ -390,6 +401,7 @@ class Runner:
             "n_sil": int(record["sil_start"].shape[0]),
             "order_rank": self.state.rank_of(file.file_id),
             "cum_hours": self.state.cum_hours_of(file.file_id),
+            **self.stages.units_version,
         }
         self._record_queue.put((file, record, meta))
 
@@ -584,21 +596,34 @@ def _slice(wav: np.ndarray, start_s: float, end_s: float) -> np.ndarray:
     return np.ascontiguousarray(wav[max(0, start) : max(0, end)])
 
 
-def resume_from_hub(uploader, state, files: Sequence[SourceFile]) -> tuple[set[str], int | None]:
+def resume_from_hub(
+    uploader, state, files: Sequence[SourceFile], units_version: dict[str, str] | None = None
+) -> tuple[set[str], int | None]:
     """What the hub already holds: its chunk ids, and the next free shard number.
 
-    A file whose planned chunks are all up is marked done. A partly uploaded file is
-    redone without those chunks, so no id ever appears in two shards.
+    The hub decides what is done, not the local state: a file is marked done as soon as
+    its chunks are written, so a shard lost to a crash or a failed upload would otherwise
+    leave a hole. A partly uploaded file is redone without those chunks, so no id ever
+    appears in two shards. Records under other centroids must not be mixed in: that stops
+    the run.
     """
     chunks: set[str] = set()
     highest = -1
     for name, lines in uploader.uploaded_manifests():
         highest = max(highest, int(name.rsplit("-", 1)[1]))
+        for line in lines:
+            for key, value in (units_version or {}).items():
+                if line.get(key) != value:
+                    raise ValueError(
+                        f"{name}: {line['id']} has {key}={line.get(key)}, this run has {value}"
+                    )
         chunks.update(line["id"] for line in lines)
     for file in files:
         planned = state.n_chunks_of(file.file_id)
-        if planned and all(records.chunk_id(file.file_id, i) in chunks for i in range(planned)):
-            state.set_status(file.file_id, "done")
+        whole = all(records.chunk_id(file.file_id, i) in chunks for i in range(planned))
+        status = "done" if whole else "todo"
+        if state.status_of(file.file_id) != status:
+            state.set_status(file.file_id, status)
     if chunks:
         log.info("%d chunks already on the hub", len(chunks))
     return chunks, highest + 1 if highest >= 0 else None
@@ -657,6 +682,9 @@ def real_stages(
     """
     readers: dict[str, Any] = {}
     codebooks = {k: kmeans.load(units_dir, k) for k in (4096, 8192)} if load_codebooks else {}
+    units_version = {
+        f"units_k{k}": shards.sha256_file(Path(units_dir) / f"k{k}.npy") for k in codebooks
+    }
     encoder = {"wavlm": None, "mimi": None}
     tables: dict[int, Any] = {}
 
@@ -718,4 +746,5 @@ def real_stages(
         wavlm_batch=wavlm_batch,
         wavlm_max_s=wavlm_max_s,
         wavlm_threads=wavlm_threads,
+        units_version=units_version,
     )

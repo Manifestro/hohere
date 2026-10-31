@@ -191,6 +191,20 @@ def test_the_pipeline_writes_real_shards_in_order(tmp_path):
         assert stages_done[stage] > 0, stage
 
 
+def test_the_manifest_names_the_centroids(tmp_path):
+    state = prepared_state(tmp_path, [source("small-1-b-f0")])
+    stages = FakeModels().stages()
+    stages.units_version = {"units_k4096": "x", "units_k8192": "y"}
+    pipeline.Runner(
+        state=state, stages=stages, out_dir=tmp_path / "shards", mark_done=False
+    ).run(state.select_until("full"))
+    lines = next((tmp_path / "shards").glob("shard-*.jsonl")).read_text().splitlines()
+    assert lines
+    for line in map(json.loads, lines):
+        assert line["units_k4096"] == "x"
+        assert line["units_k8192"] == "y"
+
+
 def test_until_hours_selects_a_prefix_of_the_order(tmp_path):
     files = [source(f"small-1-b-f{i}", seconds=3600.0) for i in range(5)]
     state = prepared_state(tmp_path, files)
