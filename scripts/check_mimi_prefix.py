@@ -7,8 +7,10 @@ Takes chunks of the first files of the plan and compares the first 8 codebooks o
   same_batch  8 codebooks, the very same input tensor: the residual quantizer alone
   one_by_one  8 codebooks, each chunk alone: what batching and padding change
   v1_ffmpeg   8 codebooks, audio resampled by ffmpeg as hohere v1 did: the older tokens
+  bench_resample_poly  8 codebooks, each chunk alone through `resample_poly`, as the
+              listening bench of dauys encodes its stimuli: training codes against test codes
 
-`same_batch` must match exactly, or the exit code is 1. The other two are reported, since
+`same_batch` must match exactly, or the exit code is 1. The others are reported, since
 their input differs. Needs the models; not part of pytest.
 Usage: check_mimi_prefix.py STATE [N]
 """
@@ -61,6 +63,15 @@ def encode8(encoder: mimi.MimiEncoder, tensor) -> np.ndarray:
         return encoder.model.encode(tensor).cpu().numpy()
 
 
+def encode_24k(encoder: mimi.MimiEncoder, audio: np.ndarray) -> np.ndarray:
+    """Codes of one 24 kHz piece, padded with zeros to whole frames."""
+    import torch
+
+    padded = np.zeros(mimi.frames_for(audio.size) * mimi.HOP, dtype=np.float32)
+    padded[: audio.size] = audio
+    return encode8(encoder, torch.from_numpy(padded).to(encoder.device).reshape(1, 1, -1))[0]
+
+
 def agreement(reference: list[np.ndarray], other: list[np.ndarray]) -> dict:
     """Share of equal codes over the common frames, for codebook 0 and the first 8."""
     first = equal = zero = frames = 0
@@ -75,7 +86,7 @@ def agreement(reference: list[np.ndarray], other: list[np.ndarray]) -> dict:
 
 
 def main(state_path: str, count: int = 20) -> int:
-    import torch
+    from scipy.signal import resample_poly
 
     encoder = mimi.load_encoder(device="cuda")
     pairs = load_chunks(state_path, count)
@@ -98,19 +109,17 @@ def main(state_path: str, count: int = 20) -> int:
     for wav in wavs:
         tensor, lengths = encoder.batch_tensor([wav])
         alone.append(encode8(encoder, tensor)[0, :, : lengths[0]])
-    from_ffmpeg = []
-    for _wav, piece in pairs:
-        n = mimi.frames_for(piece.size)
-        padded = np.zeros(n * mimi.HOP, dtype=np.float32)
-        padded[: piece.size] = piece
-        tensor = torch.from_numpy(padded).to(encoder.device).reshape(1, 1, -1)
-        from_ffmpeg.append(encode8(encoder, tensor)[0])
+    from_ffmpeg = [encode_24k(encoder, piece) for _wav, piece in pairs]
+    from_poly = [
+        encode_24k(encoder, resample_poly(wav, 3, 2).astype(np.float32)) for wav in wavs
+    ]
 
     report = {
         "chunks": len(wavs),
         "same_batch": agreement(full, same_batch),
         "one_by_one": agreement(full, alone),
         "v1_ffmpeg": agreement(full, from_ffmpeg),
+        "bench_resample_poly": agreement(full, from_poly),
     }
     print(json.dumps(report, indent=2))
     return 0 if report["same_batch"]["first_8"] == 1.0 else 1
