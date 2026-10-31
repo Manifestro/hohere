@@ -79,3 +79,10 @@ def files_for_tier(files: Sequence[HasFileId], tier: int | str) -> int:
     """How many leading files belong to `tier`."""
     hours = tier_hours(tier)
     return len(files) if hours is None else files_until(files, hours)
+
+
+def part_of(files: list, part: int, parts: int) -> list:
+    """The files one of `parts` machines takes: every `parts`-th, so all parts weigh the same."""
+    if not 0 <= part < parts:
+        raise ValueError(f"part must be in 0..{parts - 1}, got {part}")
+    return files[part::parts]

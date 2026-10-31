@@ -247,6 +247,25 @@ class Uploader:
                 delay *= 2
         raise RuntimeError(f"cannot upload {path} after {self.retries + 1} tries: {last}")
 
+    def uploaded_manifests(self) -> list[tuple[str, list[dict]]]:
+        """`(shard name, manifest lines)` of the shards whose two files are both on the hub."""
+        from huggingface_hub.errors import RepositoryNotFoundError
+
+        try:
+            names = set(self.api().list_repo_files(self.repo_id, repo_type="dataset"))
+        except RepositoryNotFoundError:
+            return []
+        out = []
+        for name in sorted(names):
+            if not name.endswith(".jsonl") or f"{name[:-6]}.tar" not in names:
+                continue
+            if self.prefix and not name.startswith(f"{self.prefix}/"):
+                continue
+            path = self.api().hf_hub_download(self.repo_id, name, repo_type="dataset")
+            lines = [json.loads(line) for line in Path(path).read_text().splitlines() if line]
+            out.append((Path(name).stem, lines))
+        return out
+
     def upload(self, shard: ClosedShard) -> None:
         """Upload both files, then delete them locally."""
         for path in shard.paths():

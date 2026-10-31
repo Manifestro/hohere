@@ -30,6 +30,7 @@ import signal
 import threading
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,7 @@ class Stages:
     encode_units_batch: Callable[[list[np.ndarray], list[list]], list] | None = None
     wavlm_batch: int = 8
     wavlm_max_s: float = 20.0  # longest WavLM input, where the pauses allow it
+    wavlm_threads: int = 1  # WavLM batches on the device at once
     # optional: fraction of boundaries that agree with a float32 reference
     agreement: Callable[[np.ndarray, list[tuple[int, int]]], float] | None = None
 
@@ -75,7 +77,9 @@ class Stages:
         return Stages(**{**self.__dict__, **kwargs})
 
 
-def encode_many(stages: Stages, wavs: list[np.ndarray], spans: list[list]) -> list:
+def encode_many(
+    stages: Stages, wavs: list[np.ndarray], spans: list[list], pool: Any = None
+) -> list:
     """Units of many chunks; results keep the input order.
 
     Each chunk is cut at its pauses into pieces of at most `wavlm_max_s`, and the pieces of
@@ -93,6 +97,7 @@ def encode_many(stages: Stages, wavs: list[np.ndarray], spans: list[list]) -> li
             )
     pieces.sort(key=lambda piece: piece[2].size)
     done: list[list[tuple[int, Any]]] = [[] for _ in wavs]
+    batches = []
     position = 0
     while position < len(pieces):
         stop = position + 1
@@ -101,11 +106,15 @@ def encode_many(stages: Stages, wavs: list[np.ndarray], spans: list[list]) -> li
             <= WAVLM_BATCH_SECONDS * vad.SAMPLE_RATE
         ):
             stop += 1
-        batch = pieces[position:stop]
-        results = stages.encode_units_batch([p[2] for p in batch], [p[3] for p in batch])
+        batches.append(pieces[position:stop])
+        position = stop
+
+    def run(batch: list) -> list:
+        return stages.encode_units_batch([p[2] for p in batch], [p[3] for p in batch])
+
+    for batch, results in zip(batches, (pool.map if pool else map)(run, batches), strict=True):
         for (index, start, _wav, _spans), segments in zip(batch, results, strict=True):
             done[index].append((start, segments))
-        position = stop
     return [zerosyl.merge_segments(sorted(parts, key=lambda p: p[0])) for parts in done]
 
 
@@ -151,6 +160,8 @@ class Runner:
         keep_files: bool = True,
         crash_after_files: int | None = None,
         audio_limit_seconds: float | None = None,
+        uploaded_chunks: set[str] | None = None,
+        first_shard: int | None = None,
     ) -> None:
         self.state = state
         self.stages = stages
@@ -165,6 +176,11 @@ class Runner:
         self.keep_files = keep_files
         self.crash_after_files = crash_after_files
         self.audio_limit_seconds = audio_limit_seconds
+        self.uploaded_chunks = uploaded_chunks or set()  # already on the hub: never redo them
+        self.first_shard = first_shard
+        self._device_pool = ThreadPoolExecutor(
+            max_workers=stages.wavlm_threads + 1, thread_name_prefix="device"
+        )
         self.stats = Stats()
         self.stop = threading.Event()
         self.failure: BaseException | None = None
@@ -255,8 +271,13 @@ class Runner:
                 continue
             self.progress.add("decode", time.perf_counter() - started)
             plan = chunk_mod.plan(file.vad, _duration(wav))
-            self._register(file, plan.chunks)
-            for index, (start_s, end_s) in enumerate(plan.chunks):
+            todo = [
+                (index, chunk)
+                for index, chunk in enumerate(plan.chunks)
+                if records.chunk_id(file.file_id, index) not in self.uploaded_chunks
+            ]
+            self._register(file, [chunk for _index, chunk in todo])
+            for index, (start_s, end_s) in todo:
                 if self.stop.is_set():
                     break
                 self._chunk_queue.put(("chunk", (file, index, start_s, end_s),
@@ -300,16 +321,15 @@ class Runner:
         wavs = [item[1] for item in buffer]
         spans = [item[2] for item in buffer]
         try:
+            # Mimi and WavLM share the device at once: each spends part of its time on the
+            # CPU, and in sequence the GPU would idle through all of it.
+            mimi_future = self._device_pool.submit(self._timed_mimi, wavs)
             started = time.perf_counter()
-            units = encode_many(self.stages, wavs, spans)
+            units = encode_many(self.stages, wavs, spans, self._device_pool)
             per = (time.perf_counter() - started) / len(buffer)
             for _ in buffer:
                 self.progress.add("wavlm", per)
-            started = time.perf_counter()
-            codes = self._encode_mimi(wavs)
-            per = (time.perf_counter() - started) / len(buffer)
-            for _ in buffer:
-                self.progress.add("mimi", per)
+            codes = mimi_future.result()
         except Exception as exc:  # one bad batch: name its files, keep the run alive
             for ctx in {id(item[0][0]): item[0] for item in buffer}.values():
                 self._error(ctx[0], f"model failed: {exc}")
@@ -319,6 +339,14 @@ class Runner:
                 self._encode_chunk(ctx, wav, chunk_spans, segments, code)
             except Exception as exc:
                 self._error(ctx[0], f"model failed: {exc}")
+
+    def _timed_mimi(self, wavs: list[np.ndarray]) -> list[np.ndarray]:
+        started = time.perf_counter()
+        codes = self._encode_mimi(wavs)
+        per = (time.perf_counter() - started) / len(wavs)
+        for _ in wavs:
+            self.progress.add("mimi", per)
+        return codes
 
     def _encode_mimi(self, wavs: list[np.ndarray]) -> list[np.ndarray]:
         order = sorted(range(len(wavs)), key=lambda i: wavs[i].size)
@@ -367,7 +395,12 @@ class Runner:
 
     def _writer(self) -> None:
         writer = ShardWriter(
-            self.out_dir, target_bytes=self.target_bytes, index=self.state.next_shard_index()
+            self.out_dir,
+            target_bytes=self.target_bytes,
+            index=(
+                self.first_shard if self.first_shard is not None
+                else self.state.next_shard_index()
+            ),
         )
         writer.open()
         self.state.open_shard(writer.name)
@@ -537,6 +570,7 @@ class Runner:
         finally:
             self.stats.wall_seconds = time.perf_counter() - started
             self.stop.set()
+            self._device_pool.shutdown(wait=False)
         return self.stats
 
 
@@ -548,6 +582,26 @@ def _slice(wav: np.ndarray, start_s: float, end_s: float) -> np.ndarray:
     start = round(start_s * vad.SAMPLE_RATE)
     end = min(round(end_s * vad.SAMPLE_RATE), wav.shape[0])
     return np.ascontiguousarray(wav[max(0, start) : max(0, end)])
+
+
+def resume_from_hub(uploader, state, files: Sequence[SourceFile]) -> tuple[set[str], int | None]:
+    """What the hub already holds: its chunk ids, and the next free shard number.
+
+    A file whose planned chunks are all up is marked done. A partly uploaded file is
+    redone without those chunks, so no id ever appears in two shards.
+    """
+    chunks: set[str] = set()
+    highest = -1
+    for name, lines in uploader.uploaded_manifests():
+        highest = max(highest, int(name.rsplit("-", 1)[1]))
+        chunks.update(line["id"] for line in lines)
+    for file in files:
+        planned = state.n_chunks_of(file.file_id)
+        if planned and all(records.chunk_id(file.file_id, i) in chunks for i in range(planned)):
+            state.set_status(file.file_id, "done")
+    if chunks:
+        log.info("%d chunks already on the hub", len(chunks))
+    return chunks, highest + 1 if highest >= 0 else None
 
 
 def install_stop_handlers(runner: Runner) -> Callable[[], None]:
@@ -592,7 +646,9 @@ def real_stages(
     mimi_batch: int = 8,
     wavlm_batch: int = 8,
     wavlm_max_s: float = 20.0,
+    wavlm_threads: int = 2,
     vad_workers: int = 8,
+    vad_onnx: bool = False,
     load_codebooks: bool = True,
 ) -> Stages:
     """The production stages: SoundFile, Silero, WavLM/ZeroSyl, Mimi, codebooks.
@@ -602,6 +658,7 @@ def real_stages(
     readers: dict[str, Any] = {}
     codebooks = {k: kmeans.load(units_dir, k) for k in (4096, 8192)} if load_codebooks else {}
     encoder = {"wavlm": None, "mimi": None}
+    tables: dict[int, Any] = {}
 
     def download(file: SourceFile) -> bytes:
         reader = reader_for(file, readers)
@@ -619,7 +676,7 @@ def real_stages(
 
     from . import zerosyl
 
-    speech = vad.speech_pool(vad_workers)
+    speech = vad.speech_pool(vad_workers, onnx=vad_onnx)
     encoder["wavlm"] = zerosyl.load_encoder(device=device, dtype=wavlm_dtype, models_dir=models_dir)
     if load_codebooks:  # a run needs Mimi from the first chunk; fit-units never does
         from . import mimi
@@ -642,7 +699,12 @@ def real_stages(
     def assign(emb: np.ndarray, k: int) -> np.ndarray:
         if emb.shape[0] == 0:
             return np.zeros(0, dtype=np.int16)
-        return kmeans.assign(emb, codebooks[k], device=device)
+        table = tables.get(k)
+        if table is None:  # a codebook stays on the device: it is copied once, not per chunk
+            import torch
+
+            table = tables[k] = torch.as_tensor(codebooks[k], device=device)
+        return kmeans.assign(emb, table, device=device)
 
     return Stages(
         download=download,
@@ -655,4 +717,5 @@ def real_stages(
         mimi_batch=mimi_batch,
         wavlm_batch=wavlm_batch,
         wavlm_max_s=wavlm_max_s,
+        wavlm_threads=wavlm_threads,
     )

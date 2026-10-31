@@ -251,6 +251,18 @@ class State:
         row = self._one("SELECT order_rank FROM files WHERE file_id = ?", (file_id,))
         return int(row["order_rank"]) if row and row["order_rank"] is not None else None
 
+    def checkpoint(self) -> None:
+        """Fold the WAL into the main file, which can then be copied alone."""
+        self._write("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def status_of(self, file_id: str) -> str | None:
+        row = self._one("SELECT status FROM files WHERE file_id = ?", (file_id,))
+        return row["status"] if row else None
+
+    def n_chunks_of(self, file_id: str) -> int:
+        row = self._one("SELECT n_chunks FROM files WHERE file_id = ?", (file_id,))
+        return int(row["n_chunks"] or 0) if row else 0
+
     def cum_hours_of(self, file_id: str) -> float | None:
         row = self._one("SELECT cum_hours FROM files WHERE file_id = ?", (file_id,))
         return float(row["cum_hours"]) if row and row["cum_hours"] is not None else None

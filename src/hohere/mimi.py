@@ -70,11 +70,22 @@ class MimiEncoder:
         )
 
     def encode_batch(self, chunks16: list[np.ndarray]) -> list[np.ndarray]:
-        """Encode 16 kHz chunks; returns `int16 [32, T]` per chunk."""
+        """Encode 16 kHz chunks; a batch too big for the device is split in two."""
         import torch
 
         if not chunks16:
             return []
+        try:
+            return self._encode_batch(chunks16)
+        except torch.cuda.OutOfMemoryError:
+            if len(chunks16) == 1:
+                raise
+        torch.cuda.empty_cache()
+        middle = len(chunks16) // 2
+        return [*self.encode_batch(chunks16[:middle]), *self.encode_batch(chunks16[middle:])]
+
+    def _encode_batch(self, chunks16: list[np.ndarray]) -> list[np.ndarray]:
+        import torch
         import torchaudio
 
         lengths = [frames_for(math.ceil(chunk.size * SAMPLE_RATE / SOURCE_RATE))

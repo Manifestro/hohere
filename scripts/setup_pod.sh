@@ -19,7 +19,7 @@ pip install --break-system-packages "moshi==0.2.13" --no-deps
 pip install --break-system-packages \
     "sentencepiece" "einops" "safetensors" "huggingface-hub" "soundfile" \
     "numpy<2.3" "pyyaml" "tqdm" "protobuf"
-pip install --break-system-packages "silero-vad>=5.1" "scipy>=1.11"
+pip install --break-system-packages "silero-vad>=5.1" "scipy>=1.11" "onnxruntime"
 
 # 3. torchaudio must match the installed torch exactly
 python - <<'PY'

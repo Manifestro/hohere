@@ -132,6 +132,7 @@ def run_bench(
     out_dir: str | os.PathLike[str] = "work/bench-shards",
     dtype: str = "float32",
     tmp_dir: str | os.PathLike[str] | None = None,
+    vad_workers: int = 8,
 ) -> dict[str, Any]:
     """Run the pipeline for `minutes` of chunk audio on a copy of the state DB."""
     work = Path(tmp_dir) if tmp_dir is not None else Path(out_dir).parent
@@ -148,6 +149,7 @@ def run_bench(
             progress=progress,
             uploader=None,
             mark_done=False,
+            vad_workers=vad_workers,
             audio_limit_seconds=float(minutes) * 60.0,
         )
         stats = runner.run(files)

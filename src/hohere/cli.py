@@ -28,6 +28,7 @@ from . import (
     records,
     units,
 )
+from . import order as order_mod
 from . import (
     pipeline as pipeline_mod,
 )
@@ -263,6 +264,43 @@ def fit_units(
 
 
 @app.command()
+def publish(
+    hf_repo: str = typer.Option(..., "--hf-repo", help="dataset repo"),
+    state_path: str = typer.Option(DEFAULT_STATE, "--state", help="SQLite state DB"),
+    units_dir: str = typer.Option("work/units", "--units-dir"),
+) -> None:
+    """Put the plan and the codebooks on the hub, for the machines of a run to fetch."""
+    from huggingface_hub import HfApi
+
+    with State(state_path) as state:
+        state.checkpoint()
+    api = HfApi()
+    api.create_repo(hf_repo, repo_type="dataset", private=True, exist_ok=True)
+    api.upload_file(
+        path_or_fileobj=state_path, path_in_repo="plan/state.db", repo_id=hf_repo,
+        repo_type="dataset",
+    )
+    api.upload_folder(
+        folder_path=units_dir, path_in_repo="units", repo_id=hf_repo, repo_type="dataset",
+        allow_patterns=["k*.npy", "k*.json"],
+    )
+
+
+@app.command()
+def fetch(
+    hf_repo: str = typer.Option(..., "--hf-repo", help="dataset repo"),
+    work_dir: str = typer.Option("work", "--work-dir"),
+) -> None:
+    """Fetch what `publish` put on the hub: `work/plan/state.db`, `work/units/k*`."""
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(
+        hf_repo, repo_type="dataset", local_dir=work_dir,
+        allow_patterns=["plan/state.db", "units/k*"],
+    )
+
+
+@app.command()
 def run(
     state_path: str = typer.Option(DEFAULT_STATE, "--state", help="SQLite state DB"),
     until_hours: str = typer.Option("full", "--until-hours", help="hours of tier or `full`"),
@@ -282,6 +320,10 @@ def run(
     mimi_batch: int = typer.Option(8, "--mimi-batch"),
     wavlm_batch: int = typer.Option(8, "--wavlm-batch"),
     wavlm_max_s: float = typer.Option(20.0, "--wavlm-max-s", help="longest WavLM input"),
+    wavlm_threads: int = typer.Option(2, "--wavlm-threads", help="WavLM batches at once"),
+    vad_onnx: bool = typer.Option(False, "--vad-onnx", help="Silero on onnxruntime"),
+    part: int = typer.Option(0, "--part", help="which part of the tier this machine takes"),
+    parts: int = typer.Option(1, "--parts", help="how many machines share the tier"),
     vad_workers: int | None = typer.Option(
         None, "--vad-workers", help="Silero processes [default: 8, on cpu a quarter of the cores]"
     ),
@@ -302,6 +344,7 @@ def run(
         files = state.select_until(target)
         if not files:
             raise typer.BadParameter("the tier is empty; run `hohere index` and `hohere plan`")
+        files = order_mod.part_of(files, part, parts)
         resolved = _resolve_device(device)
         if vad_workers is None:
             vad_workers = 8
@@ -314,7 +357,8 @@ def run(
         stages = pipeline_mod.real_stages(
             device=resolved, models_dir=models_dir, wavlm_dtype=wavlm_dtype,
             units_dir=units_dir, mimi_batch=mimi_batch, wavlm_batch=wavlm_batch,
-            wavlm_max_s=wavlm_max_s, vad_workers=vad_workers,
+            wavlm_max_s=wavlm_max_s, wavlm_threads=wavlm_threads, vad_workers=vad_workers,
+            vad_onnx=vad_onnx,
         )
         if bench_minutes is not None:
             payload = bench_mod.run_bench(
@@ -324,6 +368,7 @@ def run(
                 minutes=bench_minutes,
                 out_dir=Path(out_dir).parent / "bench-shards",
                 dtype=wavlm_dtype,
+                vad_workers=vad_workers,
             )
             typer.echo(json.dumps(payload, indent=2))
             return
@@ -333,7 +378,14 @@ def run(
             if status_port is not None
             else None
         )
+        if parts > 1:
+            prefix = f"{prefix.strip('/')}/part-{part:03d}"
         uploader = None if no_upload or not hf_repo else shards_mod.Uploader(hf_repo, prefix)
+        uploaded_chunks: set[str] = set()
+        first_shard = None
+        if uploader is not None:  # a new machine continues from what the hub already has
+            uploaded_chunks, first_shard = pipeline_mod.resume_from_hub(uploader, state, files)
+        files = [file for file in files if state.status_of(file.file_id) != "done"]
         state.set_meta("target_hours", target)
         runner = pipeline_mod.Runner(
             state=state,
@@ -344,6 +396,8 @@ def run(
             download_workers=download_workers,
             decode_workers=decode_workers,
             vad_workers=vad_workers,
+            uploaded_chunks=uploaded_chunks,
+            first_shard=first_shard,
         )
         restore = pipeline_mod.install_stop_handlers(runner)
         try:

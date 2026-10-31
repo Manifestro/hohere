@@ -24,14 +24,14 @@ _lock = threading.Lock()
 _model = None
 
 
-def load_model():
+def load_model(onnx: bool = False):
     """The Silero model, loaded once per process (one process == one worker)."""
     global _model
     with _lock:
         if _model is None:
             from silero_vad import load_silero_vad
 
-            _model = load_silero_vad()
+            _model = load_silero_vad(onnx=onnx)
         return _model
 
 
@@ -58,21 +58,21 @@ def speech(wav16: np.ndarray, model=None) -> list[Span]:
     return spans
 
 
-def _init_pool_worker() -> None:
+def _init_pool_worker(onnx: bool = False) -> None:
     import os
 
     os.environ["OMP_NUM_THREADS"] = "1"
     import torch
 
     torch.set_num_threads(1)
-    load_model()
+    load_model(onnx)
 
 
 def _pool_speech(wav16: np.ndarray) -> list[Span]:
     return speech(wav16)
 
 
-def speech_pool(workers: int):
+def speech_pool(workers: int, onnx: bool = False):
     """`speech` on a pool of one-thread processes: Silero needs no GPU and holds no state."""
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
@@ -81,6 +81,7 @@ def speech_pool(workers: int):
         max_workers=workers,
         mp_context=multiprocessing.get_context("spawn"),  # the parent owns CUDA: never fork it
         initializer=_init_pool_worker,
+        initargs=(onnx,),
     )
 
     def run(wav16: np.ndarray) -> list[Span]:
