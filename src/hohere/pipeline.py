@@ -648,7 +648,7 @@ def real_stages(
     wavlm_max_s: float = 20.0,
     wavlm_threads: int = 2,
     vad_workers: int = 8,
-    vad_onnx: bool = False,
+    vad_onnx: bool = True,
     load_codebooks: bool = True,
 ) -> Stages:
     """The production stages: SoundFile, Silero, WavLM/ZeroSyl, Mimi, codebooks.

@@ -321,7 +321,7 @@ def run(
     wavlm_batch: int = typer.Option(8, "--wavlm-batch"),
     wavlm_max_s: float = typer.Option(20.0, "--wavlm-max-s", help="longest WavLM input"),
     wavlm_threads: int = typer.Option(2, "--wavlm-threads", help="WavLM batches at once"),
-    vad_onnx: bool = typer.Option(False, "--vad-onnx", help="Silero on onnxruntime"),
+    vad_onnx: bool = typer.Option(True, "--vad-onnx/--vad-torch", help="Silero on onnxruntime"),
     part: int = typer.Option(0, "--part", help="which part of the tier this machine takes"),
     parts: int = typer.Option(1, "--parts", help="how many machines share the tier"),
     vad_workers: int | None = typer.Option(
